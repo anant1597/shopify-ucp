@@ -161,6 +161,13 @@ CREATE TABLE IF NOT EXISTS web_conversations (
   updated_at     INTEGER NOT NULL
 );
 
+-- Website chat spend per day (UTC), estimated from each response's token usage.
+CREATE TABLE IF NOT EXISTS chat_usage (
+  day       TEXT PRIMARY KEY,
+  usd       REAL NOT NULL,
+  requests  INTEGER NOT NULL
+);
+
 -- Webhook delivery ids we've processed (X-Shopify-Webhook-Id), for de-duplication.
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
   delivery_id  TEXT PRIMARY KEY,

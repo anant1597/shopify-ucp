@@ -12,7 +12,18 @@ import { randomUUID } from "node:crypto";
 import { db, now } from "../db.ts";
 import { buildConnectorServer } from "../connector/tools.ts";
 
-const MODEL = "claude-opus-5-5";
+// Model and daily budget come from .env. Haiku 5.5 is the cheap default for testing; use claude-opus-5-5 for
+// the most capable assistant.
+const MODEL = process.env.CHAT_MODEL?.trim() || "claude-haiku-5-5";
+const DAILY_BUDGET_USD = Number(process.env.CHAT_DAILY_BUDGET_USD ?? "1");
+// USD per million tokens: [input, output]. Cache writes bill 1.25x input, cache reads 0.1x input.
+const PRICES: Record<string, [number, number]> = {
+  "claude-haiku-5-5": [0.1, 0.5], // prompts up to 100K tokens; 0.50 / 2.50 beyond
+  "claude-sonnet-5-5": [2, 10],
+  "claude-opus-5-5": [4, 20],
+};
+// Only these models accept the server-side refusal fallback (Haiku has none).
+const HAS_FALLBACK = /^claude-(opus|sonnet|fable)-/.test(MODEL);
 const MAX_TOOL_ROUNDS = 12;
 const MAX_HISTORY_CHARS = 600_000; // past this, ask the customer to start a new chat
 
@@ -56,6 +67,27 @@ type DisplayItem =
   | { role: "checkout"; checkout: any };
 
 const busy = new Set<string>();
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+function spentToday(): number {
+  const row = db.prepare("SELECT usd FROM chat_usage WHERE day = ?").get(today()) as any;
+  return row?.usd ?? 0;
+}
+
+/** Cost of one response from its usage block (conservative: Haiku's >100K-token rate when the prompt is that long). */
+function recordUsage(model: string, u: any) {
+  let [inP, outP] = PRICES[model] ?? PRICES["claude-opus-5-5"];
+  const promptTokens = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+  if (model.startsWith("claude-haiku-5-5") && promptTokens > 100_000) [inP, outP] = [0.5, 2.5];
+  const usd =
+    ((u.input_tokens ?? 0) * inP + (u.cache_creation_input_tokens ?? 0) * inP * 1.25 +
+      (u.cache_read_input_tokens ?? 0) * inP * 0.1 + (u.output_tokens ?? 0) * outP) / 1e6;
+  db.prepare(
+    `INSERT INTO chat_usage (day, usd, requests) VALUES (?, ?, 1)
+     ON CONFLICT(day) DO UPDATE SET usd = usd + excluded.usd, requests = requests + 1`,
+  ).run(today(), usd);
+}
 
 export function getConversation(customerId: string, id: string) {
   const row = db.prepare("SELECT id, display_json FROM web_conversations WHERE id = ? AND customer_id = ?").get(id, customerId) as any;
@@ -113,6 +145,9 @@ export async function runChat(
   if (!process.env.ANTHROPIC_API_KEY) {
     return emit({ type: "error", message: "The assistant isn't set up yet: the Claude API key is missing." });
   }
+  if (DAILY_BUDGET_USD > 0 && spentToday() >= DAILY_BUDGET_USD) {
+    return emit({ type: "error", message: "The assistant has reached today's usage limit. Please try again tomorrow." });
+  }
   if (busy.has(id)) return emit({ type: "error", message: "Still working on your last message." });
   if (row.messages_json.length > MAX_HISTORY_CHARS) {
     return emit({ type: "error", message: "This chat is getting long. Start a new chat to continue." });
@@ -137,6 +172,10 @@ export async function runChat(
   try {
     let jsonRetries = 0;
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      if (round > 0 && DAILY_BUDGET_USD > 0 && spentToday() >= DAILY_BUDGET_USD) {
+        emit({ type: "error", message: "The assistant reached today's usage limit mid-reply. Please try again tomorrow." });
+        break;
+      }
       let turnText = "";
       const stream = client.beta.messages.stream({
         model: MODEL,
@@ -146,9 +185,8 @@ export async function runChat(
         messages,
         cache_control: { type: "ephemeral" },
         output_config: { effort: "medium" },
-        // On a safety decline, the API re-runs the turn on a suitable fallback model.
-        betas: ["server-side-fallback-2026-07-01"],
-        fallbacks: "default",
+        // On a safety decline, the API re-runs the turn on a suitable fallback model (not available on Haiku).
+        ...(HAS_FALLBACK ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
       });
       stream.on("text", (delta) => {
         turnText += delta;
@@ -159,6 +197,7 @@ export async function runChat(
       try {
         message = await stream.finalMessage();
         jsonRetries = 0;
+        recordUsage(message.model ?? MODEL, message.usage);
       } catch (err) {
         if (err instanceof Anthropic.APIError || jsonRetries++ >= 2) throw err;
         continue; // a tool input that wasn't parseable JSON: re-issue the turn

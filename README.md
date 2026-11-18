@@ -37,13 +37,14 @@ payment handlers, so the pay link is the only route anyway (and it keeps us out 
 1. **Sign in with Shop** (`/login` → Shop → `/web/signed-in`). This is also the checkout identity link, so stores
    recognise the customer without an OTP. A session cookie (HttpOnly, SameSite=Lax, 30 days; only its hash is
    stored) keeps them signed in. Same Shop account = same customer as the Claude connector.
-2. **Chat** (`POST /api/chat`, server-sent events). Claude (`claude-opus-5-5`, effort `medium`, server-side refusal
-   fallback) runs a streaming tool loop over the **same tools as the Claude connector**, called in-process.
+2. **Chat** (`POST /api/chat`, server-sent events). Claude (`CHAT_MODEL`, default `claude-haiku-5-5` for cheap testing; set
+   `claude-opus-5-5` for the most capable assistant, which also gets the server-side refusal fallback) runs a streaming tool loop over the **same tools as the Claude connector**, called in-process.
    Conversations are stored server-side, append-only (`web_conversations`), so a reload restores the chat.
 3. The page renders search results as **product cards** and checkouts as a **payment card** with a Pay button
    (opens our `/pay/…` redirect to the store's checkout). Buyer IP = the customer's browser on every message.
 
-Needs `ANTHROPIC_API_KEY` in `.env` (platform.claude.com → API keys). The Claude client ignores a shell-level
+Needs `ANTHROPIC_API_KEY` in `.env` (platform.claude.com → API keys). `CHAT_DAILY_BUDGET_USD` (default 1) stops the
+chat for the day once estimated spend reaches it (`chat_usage` table); also set a spend limit in the Claude Console. The Claude client ignores a shell-level
 `ANTHROPIC_BASE_URL`; set `CLAUDE_API_BASE_URL` to use a proxy. Code: `src/web/routes.ts`, `src/web/chat.ts`,
 `public/web/index.html`.
 
