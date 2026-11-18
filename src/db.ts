@@ -82,4 +82,13 @@ CREATE TABLE IF NOT EXISTS checkouts (
 );
 `);
 
+// Additive migrations for databases created before a column existed.
+for (const sql of ["ALTER TABLE checkouts ADD COLUMN max_total_minor INTEGER"]) {
+  try {
+    db.exec(sql);
+  } catch {
+    /* column already exists */
+  }
+}
+
 export const now = () => Date.now();

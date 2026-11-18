@@ -5,7 +5,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { searchProducts } from "./services/catalog.ts";
-import { CheckoutRejected, getCheckoutStatus, prepareCheckout } from "./services/checkout.ts";
+import {
+  CheckoutRejected,
+  getCheckoutOptions,
+  getCheckoutStatus,
+  prepareCheckout,
+  updateCheckout,
+} from "./services/checkout.ts";
 import { addAddress, getCustomer, getDefaultAddress, upsertCustomer } from "./services/customers.ts";
 import { buildShopSignInUrl, isShopLinked, startDeviceSignIn } from "./auth/shopIdentity.ts";
 import { config } from "./config.ts";
@@ -137,6 +143,40 @@ export function buildMcpServer(partner: string) {
       if (!getCustomer(id)) throw new CheckoutRejected("Unknown customer: call upsert_customer first");
       return prepareCheckout({ ...a, customer_id: id, partner });
     }),
+  );
+
+  server.registerTool(
+    "get_checkout_options",
+    {
+      description:
+        "Show what's on a prepared checkout before sending the pay link: items, delivery address, total, and the " +
+        "store's shipping options (with cost and a cash_on_delivery flag) per shipping group. Use the option_id " +
+        "values with update_checkout.",
+      inputSchema: { customer_id: z.string(), checkout_id: z.string() },
+    },
+    guard((a) => getCheckoutOptions(a.checkout_id, scoped(a.customer_id))),
+  );
+
+  server.registerTool(
+    "update_checkout",
+    {
+      description:
+        "Change a prepared checkout: choose a shipping option, switch to another saved address, change quantities " +
+        "(0 removes; new variants are added), or set discount codes. Returns the updated checkout with the same " +
+        "pay_url. Confirm changes with the customer first. Never pays or places the order.",
+      inputSchema: {
+        customer_id: z.string(),
+        checkout_id: z.string(),
+        shipping: z
+          .array(z.object({ group_id: z.string().optional(), option_id: z.string() }))
+          .optional()
+          .describe("group_id can be omitted when the checkout has one shipping group"),
+        address_id: z.string().optional(),
+        items: z.array(z.object({ variant_id: z.string(), quantity: z.number().int().min(0).max(20) })).optional(),
+        discount_codes: z.array(z.string()).optional().describe("Replaces current codes; [] removes all"),
+      },
+    },
+    guard((a) => updateCheckout({ ...a, customer_id: scoped(a.customer_id) })),
   );
 
   server.registerTool(

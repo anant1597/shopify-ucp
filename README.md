@@ -17,6 +17,10 @@ partner / our agent ──MCP (x-api-key)──▶  /mcp
                                     ├─ auto-pick cheapest shipping, enforce max_total_inr
                                     └─ continue_url → stored encrypted → returns  /pay/<token>
                                  (no UCP on store → cart permalink fallback, totals estimated)
+   get_checkout_options ────────▶ get_checkout  → items, address, total, shipping options (COD flagged)
+   update_checkout ─────────────▶ update_checkout (full PUT) → shipping choice, address, qty, discount codes;
+                                    re-reads after re-planning, keeps the customer's shipping pick,
+                                    re-checks the price cap (pay link disabled while over it)
    get_checkout_status ─────────▶ get_checkout  → completed + order_id once the customer pays
 
 customer ── /pay/<token> ──302──▶ store checkout page (pays by card; OTP/3DS happens there)
@@ -25,6 +29,15 @@ customer ── /pay/<token> ──302──▶ store checkout page (pays by car
 `complete_checkout` is never called. On Shopify, that tool submits a payment instrument and places
 the order, and only trusted agents with a payment handler can use it. Indian stores don't publish
 payment handlers, so the pay link is the only route anyway (and it keeps us out of PCI scope).
+
+## Shipping choice decides the payment method
+
+On many Indian stores a "Cash on Delivery" shipping option turns the pay page's payment section into
+COD only (seen on Blue Tokai: no card, button says "Complete order"). So:
+
+- new checkouts get the cheapest **prepaid** option (never COD when a prepaid option exists)
+- `update_checkout` warns when the agent selects a COD option
+- after an item or address change the store re-plans shipping; we restore the customer's earlier pick
 
 ## Customer sign-in (no repeated OTP)
 
