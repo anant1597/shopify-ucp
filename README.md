@@ -152,7 +152,7 @@ npm start
 | Variable | Where it comes from |
 |---|---|
 | `SHOPIFY_CLIENT_ID` / `SHOPIFY_CLIENT_SECRET` | Dev Dashboard → Agents → Agent identities → your identity → API credentials |
-| `PUBLIC_BASE_URL` | A public HTTPS URL for this service. Stores fetch `${PUBLIC_BASE_URL}/.well-known/ucp`. In development use a tunnel (`cloudflared tunnel --url http://localhost:3000`) |
+| `PUBLIC_BASE_URL` | A public HTTPS URL for this service. Stores fetch `${PUBLIC_BASE_URL}/.well-known/ucp`. In development use ngrok with its free fixed domain (`ngrok http 3000 --url https://<your-domain>.ngrok-free.dev`). Don't use Cloudflare quick tunnels (`trycloudflare.com`): they answer 403 to Claude's requests (`Claude-User`), so the Claude connector can't connect |
 | Redirect URL | Add `${PUBLIC_BASE_URL}/auth/shop/callback` under **Redirect URLs** on the same agent identity |
 | `ENCRYPTION_KEY` | `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` |
 | `PARTNER_API_KEYS` | `name:key` pairs, e.g. `internal:…,acme:…`. Customer IDs are namespaced per partner |
