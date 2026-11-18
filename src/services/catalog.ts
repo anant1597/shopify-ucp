@@ -55,6 +55,9 @@ export async function searchProducts(input: SearchInput) {
 }
 
 /** Flatten a UCP product into something an LLM agent can reason about cheaply. */
+// The catalog returns some URLs HTML-escaped (`&amp;`), which breaks every query parameter after the first.
+const cleanUrl = (u: unknown) => (typeof u === "string" ? u.replace(/&amp;/g, "&") : undefined);
+
 function simplifyProduct(p: any) {
   const money = (m: any) => (m && typeof m.amount === "number" ? { inr: m.amount / 100, currency: m.currency } : undefined);
   const variants = (p.variants ?? []).slice(0, 10).map((v: any) => ({
@@ -63,15 +66,15 @@ function simplifyProduct(p: any) {
     price: money(v.price),
     available: v.availability?.available ?? v.available ?? undefined,
     store: shopDomainOf(v) ?? shopDomainOf(p),
-    url: v.url ?? undefined,
+    url: cleanUrl(v.url),
   }));
   return {
     product_id: p.id,
     title: p.title,
     store: shopDomainOf(p) ?? variants[0]?.store,
     price_range: p.price_range ? { min: money(p.price_range.min), max: money(p.price_range.max) } : undefined,
-    url: p.url ?? variants[0]?.url,
-    image: p.media?.[0]?.url ?? p.images?.[0]?.url,
+    url: cleanUrl(p.url) ?? variants[0]?.url,
+    image: cleanUrl(p.media?.[0]?.url ?? p.images?.[0]?.url),
     variants,
   };
 }
