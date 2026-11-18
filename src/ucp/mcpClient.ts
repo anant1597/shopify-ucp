@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { config } from "../config.ts";
+import { getAgentToken, invalidateAgentToken, isCachedAgentToken } from "../auth/agentToken.ts";
 
 export class UcpError extends Error {
   code: number;
@@ -30,11 +31,33 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * Calls a UCP tool on a Shopify MCP endpoint (per-store `/api/ucp/mcp` or the Global Catalog).
  * Handles JSON-RPC framing, required `meta`, buyer IP header and 429 backoff.
  */
+const isAuthFailure = (e: unknown) =>
+  e instanceof UcpError && (e.httpStatus === 401 || /authenticat|unauthori[sz]ed|invalid[_ ]token/i.test(e.message));
+
+/**
+ * Calls a UCP tool. If a store rejects our cached agent token, fetch a fresh one and retry once.
+ * (Buyer tokens are not retried here; the caller falls back to the agent token.)
+ */
 export async function callUcpTool<T = any>(
   endpoint: string,
   tool: string,
   args: Record<string, unknown>,
   opts: CallOptions = {},
+): Promise<T> {
+  try {
+    return await callOnce<T>(endpoint, tool, args, opts);
+  } catch (e) {
+    if (!isAuthFailure(e) || !isCachedAgentToken(opts.token)) throw e;
+    invalidateAgentToken();
+    return callOnce<T>(endpoint, tool, args, { ...opts, token: await getAgentToken() });
+  }
+}
+
+async function callOnce<T>(
+  endpoint: string,
+  tool: string,
+  args: Record<string, unknown>,
+  opts: CallOptions,
 ): Promise<T> {
   const meta: Record<string, unknown> = { "ucp-agent": { profile: config.agentProfileUrl } };
   if (opts.idempotencyKey) meta["idempotency-key"] = opts.idempotencyKey;

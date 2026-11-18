@@ -44,7 +44,9 @@ export async function searchProducts(input: SearchInput) {
     if (input.indian_merchants_only !== false) filters.ships_from = [{ country: "IN" }];
   }
 
-  const token = await getAgentToken().catch(() => undefined); // search also works anonymously (low limits)
+  // Shopify rejects token-tier calls without Shopify-Buyer-IP ("AuthenticationFailed"), so only send the
+  // agent token when we know the buyer's IP; otherwise search anonymously (lower rate limits).
+  const token = input.buyer_ip ? await getAgentToken().catch(() => undefined) : undefined;
   const res: any = await callUcpTool(endpoint, "search_catalog", { catalog }, { token, buyerIp: input.buyer_ip });
   return {
     products: (res.products ?? res.catalog?.products ?? []).map(simplifyProduct),
