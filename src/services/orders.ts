@@ -20,6 +20,7 @@ import { discoverStore } from "../ucp/discovery.ts";
 import { getAgentToken } from "../auth/agentToken.ts";
 import { getStoreBuyerToken } from "../auth/shopIdentity.ts";
 import { CheckoutRejected, getCheckoutStatus } from "./checkout.ts";
+import { findShopOrderFor } from "./shopMcp.ts";
 
 const inr = (minor: number | undefined | null) => (typeof minor === "number" ? minor / 100 : undefined);
 const totalOf = (totals: any[] | undefined, type = "total") => (totals ?? []).find((t) => t.type === type)?.amount;
@@ -129,13 +130,38 @@ export async function getOrder(customerId: string, ref: string) {
     liveError = e instanceof UcpError ? e.message : (e as Error).message;
   }
 
-  // 2) Latest webhook snapshot.
+  // 2) Shop MCP, if the customer connected Shop for order tracking (live, any store).
+  try {
+    const s = await findShopOrderFor(row.customer_id, row.store_domain, row.order_id);
+    if (s) {
+      return {
+        ...base,
+        source: "shop",
+        order_id: row.order_id,
+        order_number: stored?.label ?? undefined,
+        status: s.delivery_status && s.delivery_status !== "pending" ? s.delivery_status : s.status,
+        payment_status: s.payment_status,
+        delivery_status: s.delivery_status,
+        latest_update: s.latest_update,
+        total: s.total,
+        items: s.items,
+        shipping_to: s.shipping_to,
+        tracking: s.tracking,
+        order_page_url: s.order_page_url ?? orderPage,
+        return_url: s.return_url,
+      };
+    }
+  } catch (e) {
+    liveError = `${liveError}; Shop: ${(e as Error).message}`;
+  }
+
+  // 3) Latest webhook snapshot.
   if (stored?.snapshot_enc) {
     const o = JSON.parse(decrypt(stored.snapshot_enc));
     return { ...base, source: `${stored.snapshot_source} (as of ${new Date(stored.updated_at).toISOString()})`, ...summarizeOrder(o) };
   }
 
-  // 3) What the completed checkout told us.
+  // 4) What the completed checkout told us.
   return {
     ...base,
     source: "checkout",
@@ -145,7 +171,7 @@ export async function getOrder(customerId: string, ref: string) {
     total: row.total_minor != null ? { inr: row.total_minor / 100, currency: row.currency } : undefined,
     note:
       /read_global_api_orders/.test(liveError ?? "")
-        ? "Shipping and refund details need Shopify to grant our agent the read_global_api_orders scope (or order webhooks). The order page link shows full status."
+        ? "For live status and tracking, connect the customer's Shop account (connect_shop_orders), or get read_global_api_orders / order webhooks from Shopify. The order page link shows full status."
         : `Live order details unavailable (${liveError}). The order page link shows full status.`,
   };
 }
@@ -197,7 +223,8 @@ export async function getCancellationOptions(customerId: string, ref: string, bu
     "Can a customer cancel an order after paying, and until when? How are refunds made and how long do they take? What is the return policy?",
     buyerIp,
   ).catch((e) => ({ answer: `Couldn't fetch the store policy (${(e as Error).message}).` }));
-  const shipped = ["shipped", "in_transit", "out_for_delivery", "delivered", "fulfilled", "partially_fulfilled"].includes(order.status);
+  const shippedStates = ["shipped", "in_transit", "out_for_delivery", "delivered", "delivered_partially", "fulfilled", "partially_fulfilled"];
+  const shipped = shippedStates.includes(order.status) || shippedStates.includes(order.delivery_status);
   return {
     order_number: order.order_number,
     status: order.status,
@@ -205,6 +232,7 @@ export async function getCancellationOptions(customerId: string, ref: string, bu
     likely_option: order.status === "canceled" ? "already_canceled" : shipped ? "return_after_delivery" : "ask_store_to_cancel",
     store_policy: policy.answer,
     order_page_url: order.order_page_url,
+    ...(order.return_url ? { return_url: order.return_url } : {}),
     how_to_cancel:
       "Send the customer the order page link: they can see status there and request cancellation or a return, " +
       "or contact the store from it. The store decides and processes any refund to the original payment method.",

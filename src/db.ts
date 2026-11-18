@@ -96,6 +96,18 @@ CREATE TABLE IF NOT EXISTS orders (
   updated_at        INTEGER NOT NULL
 );
 
+-- Customer's Shop MCP connection (scope personal_agent, resource https://mcp.shop.com): order history
+-- across all Shopify stores. Separate from shop_links because it's a different client/scope.
+CREATE TABLE IF NOT EXISTS shop_agent_links (
+  customer_id        TEXT PRIMARY KEY,
+  access_token_enc   TEXT NOT NULL,
+  access_expires_at  INTEGER NOT NULL,
+  refresh_token_enc  TEXT,
+  scope              TEXT,
+  linked_at          INTEGER NOT NULL,
+  updated_at         INTEGER NOT NULL
+);
+
 -- Webhook delivery ids we've processed (X-Shopify-Webhook-Id), for de-duplication.
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
   delivery_id  TEXT PRIMARY KEY,

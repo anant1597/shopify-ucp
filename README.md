@@ -39,13 +39,31 @@ payment handlers, so the pay link is the only route anyway (and it keeps us out 
 | `get_cancellation_options` | Paid order: status + the store's own cancel/refund/return policy (via `ask_business`) + order page link |
 | `ask_store` | Plain-language questions to the store (`ask_business`) |
 
+### Order tracking through Shop (works today)
+
+| Tool | What it does |
+|---|---|
+| `connect_shop_orders` | One-time device-code link; customer approves on Shop. Refresh token kept encrypted |
+| `list_my_orders` | Customer's orders from **any** Shopify store, as Shop tracks them |
+| `get_my_order` | Live payment/delivery status, latest update, items, tracking, store order page |
+
+Shop MCP (`https://mcp.shop.com`, protocol `2026-07-28`, `Mcp-Method`/`Mcp-Name` headers,
+`io.modelcontextprotocol/*` keys in `_meta`) has no cancel or return tool. Its guidance is to hand the
+shopper the order's `permalink_url` / `return_url`. That page opens signed in through Shop, and shows a
+cancel/return button only if the store enabled self-service cancellation (Blue Tokai has not).
+
+Production needs our own Shop app client enabled for `personal_agent`: requesting it with our agent
+client returns `access_denied`. Until then `SHOP_MCP_CLIENT_ID` defaults to Shop's public CLI client
+(prototyping only).
+
 Where order data comes from, best first:
 1. **`get_order` (Order MCP)**: needs our agent token to carry the `read_global_api_orders` scope.
    Shopify grants it per agent; requesting it on the token does nothing. Ask your Shopify partner manager.
-2. **Order webhooks** at `POST /webhooks/ucp/orders`: HMAC-SHA256 of the raw body with our client secret
+2. **Shop MCP** (above), when the customer has connected Shop: live status for any store.
+3. **Order webhooks** at `POST /webhooks/ucp/orders`: HMAC-SHA256 of the raw body with our client secret
    (`X-Shopify-Hmac-SHA256`), de-duplicated on `X-Shopify-Webhook-Id`, latest snapshot stored encrypted.
    Delivery URL is registered by Shopify (partner manager); there's no self-serve subscription yet.
-3. **The completed checkout**: order id, order number and order page link, always available.
+4. **The completed checkout**: order id, order number and order page link, always available.
 
 UCP has no "cancel order" or "start return" call. The store's order page (`permalink_url`) is the
 canonical place for those, so agents send the customer there with the store's policy.

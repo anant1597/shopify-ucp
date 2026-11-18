@@ -31,6 +31,14 @@ export const config = {
   ),
   dbPath: env("DB_PATH", "data/ucp.db"),
 
+  // Shop MCP (order history across all Shopify stores). Needs a Shop app client enabled by Shopify for
+  // the personal_agent scope. Defaults to Shop's public CLI client, which Shop allows for prototyping only.
+  shopMcpClientId: env("SHOP_MCP_CLIENT_ID", "5c733ab2-1903-400a-891e-7ba20c09e2a3"),
+  shopMcpClientSecret: process.env.SHOP_MCP_CLIENT_SECRET?.trim() || undefined,
+  shopMcpUrl: "https://mcp.shop.com/",
+  shopMcpResource: "https://mcp.shop.com",
+  shopMcpProtocol: "2026-07-28",
+
   // Shopify endpoints
   shopifyTokenUrl: "https://api.shopify.com/auth/access_token",
   globalCatalogMcp: "https://catalog.shopify.com/api/ucp/mcp",

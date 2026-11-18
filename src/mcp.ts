@@ -13,6 +13,7 @@ import {
   updateCheckout,
 } from "./services/checkout.ts";
 import { askStore, cancelUnpaidCheckout, getCancellationOptions, getOrder } from "./services/orders.ts";
+import { getShopOrder, isShopOrdersConnected, listShopOrders, startShopOrdersSignIn } from "./services/shopMcp.ts";
 import { addAddress, getCustomer, getDefaultAddress, upsertCustomer } from "./services/customers.ts";
 import { buildShopSignInUrl, isShopLinked, startDeviceSignIn } from "./auth/shopIdentity.ts";
 import { config } from "./config.ts";
@@ -187,6 +188,50 @@ export function buildMcpServer(partner: string) {
       inputSchema: { customer_id: z.string(), checkout_id: z.string() },
     },
     guard((a) => getCheckoutStatus(a.checkout_id, scoped(a.customer_id))),
+  );
+
+  server.registerTool(
+    "connect_shop_orders",
+    {
+      description:
+        "One-time: let the customer connect their Shop account for order tracking. Returns a link with a code " +
+        "prefilled; the customer opens it and approves (Shop handles any OTP). After that, list_my_orders and " +
+        "get_my_order show their orders from every Shopify store, and get_order shows live status.",
+      inputSchema: { customer_id: z.string() },
+    },
+    guard(async (a) => {
+      const id = scoped(a.customer_id);
+      if (isShopOrdersConnected(id)) return { already_connected: true };
+      return startShopOrdersSignIn(id);
+    }),
+  );
+
+  server.registerTool(
+    "list_my_orders",
+    {
+      description:
+        "The customer's orders from ANY Shopify store, as tracked by Shop (needs connect_shop_orders). " +
+        "status 'in_progress' (default 'all'), optional search text. Use get_my_order for details.",
+      inputSchema: {
+        customer_id: z.string(),
+        query: z.string().optional(),
+        status: z.enum(["in_progress", "all"]).optional(),
+        limit: z.number().int().min(1).max(10).optional(),
+        cursor: z.string().optional(),
+      },
+    },
+    guard((a) => listShopOrders(scoped(a.customer_id), a)),
+  );
+
+  server.registerTool(
+    "get_my_order",
+    {
+      description:
+        "Live details of one Shop-tracked order: payment and delivery status, latest update, items, tracking, " +
+        "and the store's order page (where the customer can cancel or return, if the store allows).",
+      inputSchema: { customer_id: z.string(), shop_order_id: z.string().describe("id from list_my_orders") },
+    },
+    guard((a) => getShopOrder(scoped(a.customer_id), a.shop_order_id)),
   );
 
   server.registerTool(
