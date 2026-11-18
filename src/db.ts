@@ -82,6 +82,27 @@ CREATE TABLE IF NOT EXISTS checkouts (
 );
 `);
 
+db.exec(`
+-- Orders placed through our pay links. Latest snapshot only (UCP: each payload is the full current state).
+CREATE TABLE IF NOT EXISTS orders (
+  order_id          TEXT PRIMARY KEY,          -- gid://shopify/Order/...
+  checkout_id       TEXT NOT NULL,             -- our chk_...
+  customer_id       TEXT NOT NULL,
+  store_domain      TEXT NOT NULL,
+  label             TEXT,                      -- e.g. #1042
+  permalink_enc     TEXT,                      -- store's order status page (grants access: encrypted)
+  snapshot_enc      TEXT,                      -- latest full UCP order JSON (encrypted)
+  snapshot_source   TEXT,                      -- 'get_order' | 'webhook'
+  updated_at        INTEGER NOT NULL
+);
+
+-- Webhook delivery ids we've processed (X-Shopify-Webhook-Id), for de-duplication.
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  delivery_id  TEXT PRIMARY KEY,
+  received_at  INTEGER NOT NULL
+);
+`);
+
 // Additive migrations for databases created before a column existed.
 for (const sql of ["ALTER TABLE checkouts ADD COLUMN max_total_minor INTEGER"]) {
   try {

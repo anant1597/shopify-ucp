@@ -30,6 +30,26 @@ customer ── /pay/<token> ──302──▶ store checkout page (pays by car
 the order, and only trusted agents with a payment handler can use it. Indian stores don't publish
 payment handlers, so the pay link is the only route anyway (and it keeps us out of PCI scope).
 
+## After payment: orders, cancellation, store questions
+
+| Tool | What it does |
+|---|---|
+| `get_order` | Order number, status (processing / shipped / in_transit / delivered / canceled), items, tracking, refunds, order page link |
+| `cancel_checkout` | Cancels an **unpaid** checkout; our pay link stops working (410) |
+| `get_cancellation_options` | Paid order: status + the store's own cancel/refund/return policy (via `ask_business`) + order page link |
+| `ask_store` | Plain-language questions to the store (`ask_business`) |
+
+Where order data comes from, best first:
+1. **`get_order` (Order MCP)**: needs our agent token to carry the `read_global_api_orders` scope.
+   Shopify grants it per agent; requesting it on the token does nothing. Ask your Shopify partner manager.
+2. **Order webhooks** at `POST /webhooks/ucp/orders`: HMAC-SHA256 of the raw body with our client secret
+   (`X-Shopify-Hmac-SHA256`), de-duplicated on `X-Shopify-Webhook-Id`, latest snapshot stored encrypted.
+   Delivery URL is registered by Shopify (partner manager); there's no self-serve subscription yet.
+3. **The completed checkout**: order id, order number and order page link, always available.
+
+UCP has no "cancel order" or "start return" call. The store's order page (`permalink_url`) is the
+canonical place for those, so agents send the customer there with the store's policy.
+
 ## Shipping choice decides the payment method
 
 On many Indian stores a "Cash on Delivery" shipping option turns the pay page's payment section into

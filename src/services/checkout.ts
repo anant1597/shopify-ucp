@@ -344,7 +344,11 @@ export async function getCheckoutStatus(checkoutId: string, customerId?: string)
   const row = db.prepare("SELECT * FROM checkouts WHERE id = ?").get(checkoutId) as any;
   if (!row || (customerId && row.customer_id !== customerId)) throw new CheckoutRejected("Checkout not found");
 
-  if (row.method === "ucp" && row.ucp_checkout_id && !["completed", "canceled"].includes(row.status)) {
+  // Re-read open checkouts, and paid ones whose order number we haven't recorded yet.
+  const missingOrderLabel =
+    row.status === "completed" &&
+    !(db.prepare("SELECT label FROM orders WHERE checkout_id = ?").get(row.id) as any)?.label;
+  if (row.method === "ucp" && row.ucp_checkout_id && (!["completed", "canceled"].includes(row.status) || missingOrderLabel)) {
     try {
       const store = await discoverStore(row.store_domain);
       const buyerToken = row.buyer_signed_in ? await getStoreBuyerToken(row.customer_id, row.store_domain) : null;
@@ -356,6 +360,7 @@ export async function getCheckoutStatus(checkoutId: string, customerId?: string)
         "UPDATE checkouts SET status = ?, total_minor = ?, order_id = ?, order_url = ?, updated_at = ? WHERE id = ?",
       ).run(status, total, co.order?.id ?? row.order_id, co.order?.permalink_url ?? row.order_url, now(), row.id);
       Object.assign(row, { status, total_minor: total, order_id: co.order?.id ?? row.order_id, order_url: co.order?.permalink_url ?? row.order_url });
+      if (co.order?.id) recordOrder(row, co.order);
     } catch (e) {
       if (!(e instanceof UcpError)) throw e;
       // Expired/unknown checkouts surface as UCP errors; keep last known state.
@@ -618,6 +623,7 @@ function syncRow(row: any, co: any) {
     `UPDATE checkouts SET status = ?, total_minor = ?, continue_url_enc = COALESCE(?, continue_url_enc),
        order_id = COALESCE(?, order_id), order_url = COALESCE(?, order_url), updated_at = ? WHERE id = ?`,
   ).run(status, total, url ? encrypt(url) : null, co.order?.id ?? null, co.order?.permalink_url ?? null, now(), row.id);
+  if (co.order?.id) recordOrder(row, co.order);
   Object.assign(row, { status, total_minor: total });
 }
 
@@ -642,4 +648,17 @@ function fillMissingDeliveryPhone(co: any, customer: Customer): Record<string, u
   const dest = method?.destinations?.find((d: any) => d.id === method.selected_destination_id) ?? method?.destinations?.[0];
   if (!dest || dest.phone_number) return null;
   return bodyFrom(co, customer, { destination: { ...pickDest(dest), phone_number: customer.phone } });
+}
+
+/** Remember the order the store attached to a completed checkout (id, label like "#1042", order page). */
+function recordOrder(row: any, order: { id: string; label?: string; permalink_url?: string }) {
+  db.prepare(
+    `INSERT INTO orders (order_id, checkout_id, customer_id, store_domain, label, permalink_enc, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(order_id) DO UPDATE SET label = COALESCE(excluded.label, label),
+       permalink_enc = COALESCE(excluded.permalink_enc, permalink_enc), updated_at = excluded.updated_at`,
+  ).run(
+    order.id, row.id, row.customer_id, row.store_domain, order.label ?? null,
+    order.permalink_url ? encrypt(order.permalink_url) : null, now(),
+  );
 }

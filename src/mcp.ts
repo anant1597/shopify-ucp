@@ -12,6 +12,7 @@ import {
   prepareCheckout,
   updateCheckout,
 } from "./services/checkout.ts";
+import { askStore, cancelUnpaidCheckout, getCancellationOptions, getOrder } from "./services/orders.ts";
 import { addAddress, getCustomer, getDefaultAddress, upsertCustomer } from "./services/customers.ts";
 import { buildShopSignInUrl, isShopLinked, startDeviceSignIn } from "./auth/shopIdentity.ts";
 import { config } from "./config.ts";
@@ -186,6 +187,52 @@ export function buildMcpServer(partner: string) {
       inputSchema: { customer_id: z.string(), checkout_id: z.string() },
     },
     guard((a) => getCheckoutStatus(a.checkout_id, scoped(a.customer_id))),
+  );
+
+  server.registerTool(
+    "get_order",
+    {
+      description:
+        "After the customer has paid: order number, status (processing / shipped / in_transit / delivered / " +
+        "canceled), items, tracking links, refunds, and the store's order page link. Pass the checkout_id from " +
+        "prepare_checkout (or the store's order id).",
+      inputSchema: { customer_id: z.string(), order_ref: z.string().describe("checkout_id or store order id") },
+    },
+    guard((a) => getOrder(scoped(a.customer_id), a.order_ref)),
+  );
+
+  server.registerTool(
+    "cancel_checkout",
+    {
+      description:
+        "Cancel a checkout the customer has NOT paid yet (for example they changed their mind). The pay link stops " +
+        "working. For paid orders use get_cancellation_options instead.",
+      inputSchema: { customer_id: z.string(), checkout_id: z.string() },
+    },
+    guard((a) => cancelUnpaidCheckout(scoped(a.customer_id), a.checkout_id)),
+  );
+
+  server.registerTool(
+    "get_cancellation_options",
+    {
+      description:
+        "Customer wants to cancel or return a PAID order. Stores don't allow cancelling through the API, so this " +
+        "returns the order's status, the store's own cancellation/refund/return policy, and the order page link " +
+        "where the customer requests it. Relay these to the customer; don't promise a cancellation.",
+      inputSchema: { customer_id: z.string(), order_ref: z.string(), buyer_ip: z.string().optional() },
+    },
+    guard((a) => getCancellationOptions(scoped(a.customer_id), a.order_ref, a.buyer_ip)),
+  );
+
+  server.registerTool(
+    "ask_store",
+    {
+      description:
+        "Ask a store a question in plain language: delivery times, shipping to a pincode, return policy, product " +
+        "details. Answers come from the store.",
+      inputSchema: { store: z.string(), question: z.string().max(2000), buyer_ip: z.string().optional() },
+    },
+    guard((a) => askStore(a.store, a.question, a.buyer_ip)),
   );
 
   return server;

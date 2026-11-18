@@ -5,8 +5,16 @@ import { config } from "./config.ts";
 import { buildMcpServer } from "./mcp.ts";
 import { handleShopCallback } from "./auth/shopIdentity.ts";
 import { resolvePayLink } from "./services/checkout.ts";
+import { ingestOrderWebhook, verifyOrderWebhook } from "./services/orders.ts";
 
-const agentProfile = readFileSync(new URL("../public/agent-profile.json", import.meta.url), "utf8");
+// Agent profile, with our order webhook URL filled in (UCP: order capability config.webhook_url).
+const agentProfile = (() => {
+  const p = JSON.parse(readFileSync(new URL("../public/agent-profile.json", import.meta.url), "utf8"));
+  for (const c of p.ucp.capabilities["dev.ucp.shopping.order"] ?? []) {
+    c.config = { ...(c.config ?? {}), webhook_url: `${config.publicBaseUrl}/webhooks/ucp/orders` };
+  }
+  return JSON.stringify(p, null, 2);
+})();
 
 function send(res: ServerResponse, status: number, body: string, type = "text/plain; charset=utf-8") {
   res.writeHead(status, { "content-type": type, "cache-control": "no-store", "referrer-policy": "no-referrer" });
@@ -18,10 +26,19 @@ const page = (title: string, msg: string) =>
 <title>${title}</title><body style="font-family:system-ui;max-width:28rem;margin:4rem auto;padding:0 16px">
 <h2>${title}</h2><p>${msg}</p></body>`;
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
+async function readRaw(req: IncomingMessage, limit = 2_000_000): Promise<Buffer> {
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
-  const raw = Buffer.concat(chunks).toString("utf8");
+  let size = 0;
+  for await (const c of req) {
+    size += (c as Buffer).length;
+    if (size > limit) throw new Error("Body too large");
+    chunks.push(c as Buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  const raw = (await readRaw(req)).toString("utf8");
   return raw ? JSON.parse(raw) : undefined;
 }
 
@@ -65,6 +82,24 @@ const server = createServer(async (req, res) => {
       if (!target) return send(res, 410, page("Link expired", "Ask the assistant for a fresh payment link."), "text/html");
       res.writeHead(302, { location: target, "cache-control": "no-store", "referrer-policy": "no-referrer" });
       return res.end();
+    }
+
+    // Shopify order webhooks (orders/create|updated|delete): full current order state, HMAC signed.
+    if (req.method === "POST" && url.pathname === "/webhooks/ucp/orders") {
+      const raw = await readRaw(req);
+      if (!verifyOrderWebhook(raw, req.headers["x-shopify-hmac-sha256"] as string | undefined)) {
+        return send(res, 401, "invalid signature");
+      }
+      let payload: unknown;
+      try {
+        payload = JSON.parse(raw.toString("utf8"));
+      } catch {
+        return send(res, 400, "invalid json");
+      }
+      const deliveryId = (req.headers["x-shopify-webhook-id"] ?? req.headers["webhook-id"]) as string | undefined;
+      const out = ingestOrderWebhook(deliveryId, payload);
+      console.log(`[webhook] ${req.headers["x-shopify-topic"] ?? "order"} ${out.result}`);
+      return send(res, 200, JSON.stringify(out), "application/json");
     }
 
     // MCP for agents (stateless streamable HTTP).
