@@ -20,7 +20,7 @@ import { discoverStore } from "../ucp/discovery.ts";
 import { getAgentToken } from "../auth/agentToken.ts";
 import { getStoreBuyerToken } from "../auth/shopIdentity.ts";
 import { CheckoutRejected, getCheckoutStatus } from "./checkout.ts";
-import { findShopOrderFor } from "./shopMcp.ts";
+import { findShopOrderFor, SHOP_LAG_NOTE } from "./shopMcp.ts";
 
 const inr = (minor: number | undefined | null) => (typeof minor === "number" ? minor / 100 : undefined);
 const totalOf = (totals: any[] | undefined, type = "total") => (totals ?? []).find((t) => t.type === type)?.amount;
@@ -149,6 +149,7 @@ export async function getOrder(customerId: string, ref: string) {
         tracking: s.tracking,
         order_page_url: s.order_page_url ?? orderPage,
         return_url: s.return_url,
+        note: SHOP_LAG_NOTE,
       };
     }
   } catch (e) {

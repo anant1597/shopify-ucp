@@ -17,6 +17,11 @@ const SHOP = config.shopIdentityIssuer;
 const SCOPE = "openid email personal_agent";
 const MAX_PAGE = 10; // search_orders rejects larger pages
 
+/** Shop's order feed can lag the store (seen: a store cancellation + refund still shown as paid/processing hours later). */
+export const SHOP_LAG_NOTE =
+  "Status as tracked by Shop, which can lag the store (cancellations and refunds may not show yet). " +
+  "The store's order page is the source of truth.";
+
 function clientParams(): Record<string, string> {
   return {
     client_id: config.shopMcpClientId,
@@ -175,6 +180,7 @@ function summarizeShopOrder(o: any) {
     order_page_url: o.permalink_url,
     return_url: o.return_url ?? undefined,
     shopify_order_id: o.shopify_order_id ? numericId(o.shopify_order_id) : undefined,
+    note: SHOP_LAG_NOTE,
   };
 }
 
