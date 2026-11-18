@@ -1,0 +1,26 @@
+{
+  "name": "shopify-ucp",
+  "version": "1.0.0",
+  "description": "Agent-facing service that prepares Shopify (UCP) checkouts for Indian stores and returns a pay link, never completing payment.",
+  "scripts": {
+    "start": "node --env-file=.env src/server.ts",
+    "dev": "node --env-file=.env --watch src/server.ts",
+    "probe": "node --env-file-if-exists=.env scripts/probe.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}
