@@ -30,6 +30,23 @@ customer ── /pay/<token> ──302──▶ store checkout page (pays by car
 the order, and only trusted agents with a payment handler can use it. Indian stores don't publish
 payment handlers, so the pay link is the only route anyway (and it keeps us out of PCI scope).
 
+## Website: shop by chat
+
+`${PUBLIC_BASE_URL}/` is a chat website for customers (works on phones):
+
+1. **Sign in with Shop** (`/login` → Shop → `/web/signed-in`). This is also the checkout identity link, so stores
+   recognise the customer without an OTP. A session cookie (HttpOnly, SameSite=Lax, 30 days; only its hash is
+   stored) keeps them signed in. Same Shop account = same customer as the Claude connector.
+2. **Chat** (`POST /api/chat`, server-sent events). Claude (`claude-opus-5-5`, effort `medium`, server-side refusal
+   fallback) runs a streaming tool loop over the **same tools as the Claude connector**, called in-process.
+   Conversations are stored server-side, append-only (`web_conversations`), so a reload restores the chat.
+3. The page renders search results as **product cards** and checkouts as a **payment card** with a Pay button
+   (opens our `/pay/…` redirect to the store's checkout). Buyer IP = the customer's browser on every message.
+
+Needs `ANTHROPIC_API_KEY` in `.env` (platform.claude.com → API keys). The Claude client ignores a shell-level
+`ANTHROPIC_BASE_URL`; set `CLAUDE_API_BASE_URL` to use a proxy. Code: `src/web/routes.ts`, `src/web/chat.ts`,
+`public/web/index.html`.
+
 ## Claude custom connector (customer front end)
 
 A customer adds `${PUBLIC_BASE_URL}/connector/mcp` in Claude → Settings → Connectors → Add custom connector
@@ -157,7 +174,10 @@ Probe stores: `npm run probe -- www.boat-lifestyle.com snitch.co.in`
 src/server.ts              HTTP: /.well-known/ucp, /auth/shop/*, /pay/:token, /mcp
 src/mcp.ts                 MCP tools for agents (API key)
 src/connector/oauth.ts     OAuth server for the Claude connector (login = Sign in with Shop)
-src/connector/tools.ts     customer-bound MCP tools for the Claude connector
+src/connector/tools.ts     customer-bound MCP tools (Claude connector + website)
+src/web/routes.ts          website: Sign in with Shop, session cookie, chat API (SSE)
+src/web/chat.ts            Claude streaming tool loop over the customer tools
+public/web/index.html      chat website (product + payment cards)
 src/services/checkout.ts   prepare → pay link, status, permalink fallback
 src/services/catalog.ts    Global Catalog / per-store search
 src/services/customers.ts  customers, addresses, phone normalisation

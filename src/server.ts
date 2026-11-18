@@ -8,6 +8,7 @@ import { resolvePayLink } from "./services/checkout.ts";
 import { ingestOrderWebhook, verifyOrderWebhook } from "./services/orders.ts";
 import { CONNECTOR_PATH, customerForAccessToken, handleConnectorOAuth, resourceMetadataUrl } from "./connector/oauth.ts";
 import { buildConnectorServer } from "./connector/tools.ts";
+import { handleWeb } from "./web/routes.ts";
 
 // Agent profile, with our order webhook URL filled in (UCP: order capability config.webhook_url).
 const agentProfile = (() => {
@@ -142,6 +143,9 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/health") return send(res, 200, "ok");
+
+    // Website: Sign in with Shop + chat.
+    if (await handleWeb(req, res, url)) return;
     send(res, 404, "Not found");
   } catch (e) {
     console.error(e);
@@ -154,5 +158,6 @@ server.listen(config.port, () => {
   console.log(`  agent profile : ${config.agentProfileUrl}`);
   console.log(`  shop redirect : ${config.shopRedirectUri}`);
   console.log(`  claude connector: ${config.publicBaseUrl}${CONNECTOR_PATH}`);
+  console.log(`  website       : ${config.publicBaseUrl}/`);
   console.log(`  partners      : ${[...config.partnerApiKeys.values()].join(", ") || "(none — set PARTNER_API_KEYS)"}`);
 });

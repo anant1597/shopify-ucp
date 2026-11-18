@@ -124,7 +124,18 @@ export function buildConnectorServer(customerId: string) {
       },
       annotations: READ,
     },
-    guard((a) => searchProducts({ ...a, limit: a.limit ?? 8 })),
+    guard(async (a) => {
+      const r: any = await searchProducts({ ...a, limit: a.limit ?? 8 });
+      // Some stores ignore the catalog price filter, so enforce it here.
+      if (a.max_price_inr != null) {
+        r.products = r.products.filter((p: any) => {
+          const prices = (p.variants ?? []).map((v: any) => v.price?.inr).filter((n: any) => typeof n === "number");
+          const min = prices.length ? Math.min(...prices) : p.price_range?.min?.inr;
+          return min == null || min <= a.max_price_inr!;
+        });
+      }
+      return r;
+    }),
   );
 
   server.registerTool(

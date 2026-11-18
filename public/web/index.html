@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Shop by Chat</title>
+<meta name="description" content="Shop Indian Shopify stores by chatting. Pay on the store's own checkout.">
+<style>
+  :root {
+    --bg: #f7f6f3; --surface: #ffffff; --surface-2: #f0eee9; --text: #1b1a17; --muted: #6b6860;
+    --line: #e4e1da; --brand: #5a31f4; --brand-ink: #ffffff; --brand-soft: #efeafe;
+    --ok: #137a4b; --warn: #9a5b00; --bubble-user: #1b1a17; --bubble-user-ink: #fff;
+    --radius: 16px; --shadow: 0 1px 2px rgba(0,0,0,.05), 0 4px 16px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121212; --surface: #1c1c1e; --surface-2: #262628; --text: #f2f1ee; --muted: #a09d96;
+      --line: #2f2f31; --brand: #7c5cff; --brand-soft: #2a2343; --ok: #4cc38a; --warn: #f0b35a;
+      --bubble-user: #f2f1ee; --bubble-user-ink: #121212; --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  a { color: var(--brand); }
+  .app { display: flex; flex-direction: column; height: 100dvh; max-width: 760px; margin: 0 auto; }
+
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 14px 16px;
+    border-bottom: 1px solid var(--line); background: var(--bg);
+  }
+  .mark { width: 30px; height: 30px; border-radius: 9px; background: var(--brand); display: grid; place-items: center; flex: none; }
+  .mark svg { width: 18px; height: 18px; }
+  .brand { white-space: nowrap; font-weight: 650; letter-spacing: -.01em; }
+  header .spacer { flex: 1; }
+  .ghost { white-space: nowrap; background: none; border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; font-size: 14px; color: var(--text); }
+  .ghost:hover { background: var(--surface-2); }
+  .who { font-size: 14px; color: var(--muted); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Signed-out landing */
+  .landing { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 32px 16px 48px; gap: 28px; }
+  .landing h1 { font-size: clamp(28px, 6vw, 40px); line-height: 1.12; letter-spacing: -.02em; margin: 0; }
+  .landing p.lead { color: var(--muted); margin: 0; font-size: 17px; max-width: 34rem; }
+  .steps { display: grid; gap: 10px; padding: 0; margin: 0; list-style: none; }
+  .steps li { display: flex; gap: 12px; align-items: flex-start; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
+  .steps b { display: block; }
+  .steps span.n { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--brand-soft); color: var(--brand); font-weight: 650; display: grid; place-items: center; font-size: 14px; }
+  .steps small { color: var(--muted); font-size: 14px; }
+  .shop-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 10px; width: 100%; max-width: 360px;
+    background: var(--brand); color: var(--brand-ink); border: 0; border-radius: 12px; padding: 14px 18px;
+    font-weight: 650; text-decoration: none; font-size: 16px;
+  }
+  .shop-btn:hover { filter: brightness(1.06); }
+  .fine { color: var(--muted); font-size: 13px; margin: 0; }
+  .notice { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; font-size: 14px; }
+
+  /* Chat */
+  .chat { flex: 1; overflow-y: auto; padding: 18px 16px 8px; display: flex; flex-direction: column; gap: 14px; scroll-behavior: smooth; }
+  .chat > * { flex-shrink: 0; }
+  .msg { max-width: 88%; white-space: normal; overflow-wrap: anywhere; }
+  .msg.user { align-self: flex-end; background: var(--bubble-user); color: var(--bubble-user-ink); padding: 10px 14px; border-radius: 18px 18px 4px 18px; }
+  .msg.assistant { align-self: flex-start; padding: 2px 2px; }
+  .msg.assistant p { margin: 0 0 8px; } .msg.assistant p:last-child { margin-bottom: 0; }
+  .msg.assistant ul, .msg.assistant ol { margin: 4px 0 8px; padding-left: 20px; }
+  .msg.error { align-self: flex-start; color: var(--warn); font-size: 14px; }
+  .status { align-self: flex-start; display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--brand); animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .3; transform: scale(.8); } }
+
+  .empty { margin: auto 0; display: flex; flex-direction: column; gap: 14px; padding: 8px 0 24px; }
+  .empty h2 { margin: 0; font-size: 22px; letter-spacing: -.01em; }
+  .empty p { margin: 0; color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px; font-size: 14px; text-align: left; }
+  .chip:hover { border-color: var(--brand); }
+
+  .products { display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 8px; margin: 0 -16px; padding-left: 16px; padding-right: 16px; scroll-snap-type: x proximity; }
+  .card { flex: none; width: 168px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; scroll-snap-align: start; box-shadow: var(--shadow); }
+  .card .img { aspect-ratio: 1; overflow: hidden; background: var(--surface-2); display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; }
+  .card img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .card .body { padding: 10px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
+  .card .t { font-size: 14px; font-weight: 550; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .card .s { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .p { font-weight: 650; margin-top: auto; }
+  .card button { margin-top: 6px; background: var(--brand-soft); color: var(--brand); border: 0; border-radius: 9px; padding: 7px 8px; font-size: 13px; font-weight: 600; }
+
+  .checkout { align-self: stretch; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; max-width: 440px; }
+  .checkout .head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .checkout .store { font-size: 13px; color: var(--muted); }
+  .checkout .total { font-size: 26px; font-weight: 700; letter-spacing: -.02em; }
+  .checkout dl { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; margin: 0; font-size: 14px; color: var(--muted); }
+  .checkout dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  .pay { display: flex; justify-content: center; align-items: center; gap: 8px; background: var(--brand); color: #fff; text-decoration: none; border-radius: 12px; padding: 13px; font-weight: 650; }
+  .checkout .note { font-size: 13px; color: var(--muted); margin: 0; }
+  .checkout .warn { font-size: 13px; color: var(--warn); margin: 0; }
+
+  form.composer { display: flex; gap: 8px; padding: 10px 16px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--bg); }
+  .composer textarea {
+    flex: 1; resize: none; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 14px;
+    padding: 11px 14px; font: inherit; max-height: 140px; min-height: 46px; outline: none;
+  }
+  .composer textarea:focus { border-color: var(--brand); }
+  .send { flex: none; width: 46px; height: 46px; border-radius: 50%; border: 0; background: var(--brand); color: #fff; display: grid; place-items: center; }
+  .send:disabled { opacity: .45; cursor: default; }
+  .hidden { display: none !important; }
+  @media (max-width: 480px) { .msg { max-width: 94%; } .who { display: none; } header { gap: 8px; } .ghost { padding: 6px 10px; font-size: 13px; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7h12l-1 12H7L6 7Z"/><path d="M9 7a3 3 0 0 1 6 0"/></svg>
+    </div>
+    <div class="brand">Shop by Chat</div>
+    <div class="spacer"></div>
+    <span class="who hidden" id="who"></span>
+    <button class="ghost hidden" id="newChat" type="button">New chat</button>
+    <button class="ghost hidden" id="logout" type="button">Sign out</button>
+  </header>
+
+  <!-- Signed out -->
+  <main class="landing hidden" id="landing">
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <h1>Shop India's online stores by chatting.</h1>
+      <p class="lead">Tell the assistant what you want. It finds it on real Shopify stores, builds your order, and gives you a link to pay on the store's own checkout.</p>
+    </div>
+    <ul class="steps">
+      <li><span class="n">1</span><div><b>Ask for anything</b><small>"Cold brew under ₹500 delivered to 560008"</small></div></li>
+      <li><span class="n">2</span><div><b>Pick from real stores</b><small>Prices, delivery and offers straight from the store</small></div></li>
+      <li><span class="n">3</span><div><b>Pay on the store's page</b><small>Card or UPI. We never see your card details or OTP.</small></div></li>
+    </ul>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div class="notice hidden" id="signinFailed">Sign-in didn't finish. Please try again.</div>
+      <a class="shop-btn" href="/login">Sign in with Shop</a>
+      <p class="fine">One sign-in. After that, stores recognise you without a new OTP each time.</p>
+    </div>
+  </main>
+
+  <!-- Signed in -->
+  <main class="chat hidden" id="chat" aria-live="polite">
+    <div class="empty" id="empty">
+      <h2 id="hello">What are you shopping for?</h2>
+      <p>I search Shopify stores that deliver in India and set up the order. You pay on the store's page.</p>
+      <div class="chips">
+        <button class="chip" type="button">Cold brew coffee under ₹500</button>
+        <button class="chip" type="button">Running shoes for men, size 9</button>
+        <button class="chip" type="button">A gift for my mom under ₹2,000</button>
+        <button class="chip" type="button">Where are my orders?</button>
+      </div>
+    </div>
+  </main>
+  <form class="composer hidden" id="composer">
+    <textarea id="input" rows="1" placeholder="What do you want to buy?" aria-label="Message"></textarea>
+    <button class="send" id="send" type="submit" aria-label="Send">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    </button>
+  </form>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const chat = $("chat"), input = $("input"), send = $("send");
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
+  };
+  let conversationId = store.get("conversation_id");
+  let busy = false;
+
+  const inr = (n) => n == null ? "" : new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: n % 1 ? 2 : 0 }).format(n);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const safeUrl = (u) => { try { const x = new URL(u, location.href); return ["https:", "http:"].includes(x.protocol) ? x.href : null; } catch { return null; } };
+
+  // Small, safe markdown subset: paragraphs, lists, **bold**, [links](https://…), bare links.
+  function md(text) {
+    const inline = (s) => esc(s)
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, u) => { const h = safeUrl(u.replace(/&amp;/g, "&")); return h ? `<a href="${esc(h)}" target="_blank" rel="noopener noreferrer">${t}</a>` : t; })
+      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, (m, pre, u) => `${pre}<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`);
+    const out = []; let list = null;
+    for (const raw of text.split("\n")) {
+      const line = raw.trimEnd();
+      const ul = line.match(/^\s*[-*•]\s+(.*)/), ol = line.match(/^\s*\d+[.)]\s+(.*)/);
+      if (ul || ol) {
+        const tag = ul ? "ul" : "ol";
+        if (!list || list.tag !== tag) { if (list) out.push(`</${list.tag}>`); list = { tag }; out.push(`<${tag}>`); }
+        out.push(`<li>${inline((ul || ol)[1])}</li>`);
+        continue;
+      }
+      if (list) { out.push(`</${list.tag}>`); list = null; }
+      if (line.trim()) out.push(`<p>${inline(line)}</p>`);
+    }
+    if (list) out.push(`</${list.tag}>`);
+    return out.join("");
+  }
+
+  const scroll = () => { chat.scrollTop = chat.scrollHeight; };
+  const hideEmpty = () => $("empty")?.classList.add("hidden");
+
+  function addUser(text) {
+    hideEmpty();
+    const d = document.createElement("div"); d.className = "msg user"; d.textContent = text; chat.append(d); scroll();
+  }
+  function addAssistant(text = "") {
+    hideEmpty();
+    const d = document.createElement("div"); d.className = "msg assistant"; d._raw = text; d.innerHTML = md(text); chat.append(d); scroll();
+    return d;
+  }
+  function addError(text) {
+    const d = document.createElement("div"); d.className = "msg error"; d.textContent = text; chat.append(d); scroll();
+  }
+
+  function addProducts(products) {
+    hideEmpty();
+    const row = document.createElement("div"); row.className = "products";
+    for (const p of products) {
+      const c = document.createElement("div"); c.className = "card";
+      const img = safeUrl(p.image);
+      c.innerHTML = `
+        <div class="img">${img ? `<img loading="lazy" alt="" src="${esc(img)}">` : "No image"}</div>
+        <div class="body">
+          <div class="t">${esc(p.title)}</div>
+          <div class="s">${esc(p.store || "")}</div>
+          <div class="p">${p.price_inr != null ? inr(p.price_inr) : ""}</div>
+          <button type="button">Choose this</button>
+        </div>`;
+      c.querySelector("img")?.addEventListener("error", (e) => { e.target.parentElement.textContent = "No image"; });
+      c.querySelector("button").addEventListener("click", () => submit(`I'd like "${p.title}" from ${p.store}.`));
+      row.append(c);
+    }
+    chat.append(row); scroll();
+  }
+
+  function addCheckout(k) {
+    hideEmpty();
+    const d = document.createElement("div"); d.className = "checkout";
+    const lines = (k.breakdown || []).filter((b) => b.type !== "total" && b.inr != null);
+    const label = (t) => ({ subtotal: "Items", items_discount: "Discount", discount: "Discount", fulfillment: "Shipping", shipping: "Shipping", tax: "Tax" }[t] || t.replace(/_/g, " "));
+    const pay = safeUrl(k.pay_url);
+    const total = k.total?.inr;
+    d.innerHTML = `
+      <div class="head"><span class="store">${esc(k.store || "Store checkout")}</span><span class="store">${k.total?.estimated ? "Estimated" : ""}</span></div>
+      <div class="total">${total != null ? inr(total) : "Total on the store's page"}</div>
+      ${lines.length ? `<dl>${lines.map((b) => `<dt>${esc(label(b.type))}</dt><dd>${inr(b.inr)}</dd>`).join("")}</dl>` : ""}
+      ${k.status === "needs_customer_input" ? `<p class="warn">The store needs a few details from you on its page before you pay.</p>` : ""}
+      ${pay ? `<a class="pay" href="${esc(pay)}" target="_blank" rel="noopener noreferrer">Pay${total != null ? " " + inr(total) : ""} on the store's page</a>` : ""}
+      <p class="note">Card, UPI and other options on the store's own checkout. Your bank's OTP happens there.</p>`;
+    chat.append(d); scroll();
+  }
+
+  const toolLabels = {
+    get_my_profile: "Checking your details", search_products: "Searching stores", prepare_checkout: "Building your order",
+    get_checkout_options: "Checking delivery options", update_checkout: "Updating your order", get_checkout_status: "Checking payment",
+    add_address: "Saving your address", update_my_details: "Saving your details", get_order: "Checking your order",
+    list_my_orders: "Looking up your orders", get_my_order: "Checking your order", get_cancellation_options: "Checking the store's policy",
+    ask_store: "Asking the store", cancel_checkout: "Cancelling the checkout", connect_order_tracking: "Setting up order tracking",
+  };
+  let statusEl = null;
+  function setStatus(text) {
+    if (!text) { statusEl?.remove(); statusEl = null; return; }
+    if (!statusEl) { statusEl = document.createElement("div"); statusEl.className = "status"; }
+    statusEl.innerHTML = `<span class="dot"></span>${esc(text)}…`;
+    chat.append(statusEl); scroll();
+  }
+
+  async function submit(text) {
+    text = text.trim();
+    if (!text || busy) return;
+    busy = true; send.disabled = true; input.value = ""; autosize();
+    addUser(text);
+    setStatus("Thinking");
+    let current = null;
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: text, conversation_id: conversationId }),
+      });
+      if (res.status === 401) return showSignedOut();
+      if (!res.ok || !res.body) throw new Error(`Request failed (${res.status})`);
+      const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) {
+          const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+          const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+          if (!line) continue;
+          const e = JSON.parse(line.slice(6));
+          if (e.type === "text") {
+            setStatus(null);
+            if (!current) current = addAssistant("");
+            current._raw += e.delta; current.innerHTML = md(current._raw); scroll();
+          } else if (e.type === "tool") {
+            current = null;
+            setStatus(e.status === "start" ? (toolLabels[e.name] || "Working") : "Thinking");
+          } else if (e.type === "products") { current = null; statusEl?.remove(); addProducts(e.products); if (statusEl) chat.append(statusEl); }
+          else if (e.type === "checkout") { current = null; statusEl?.remove(); addCheckout(e.checkout); if (statusEl) chat.append(statusEl); }
+          else if (e.type === "error") { setStatus(null); addError(e.message); }
+          else if (e.type === "done") { conversationId = e.conversation_id; store.set("conversation_id", conversationId); }
+        }
+      }
+    } catch (err) {
+      addError("Couldn't reach the assistant. Check your connection and try again.");
+    } finally {
+      setStatus(null); busy = false; send.disabled = false; input.focus();
+    }
+  }
+
+  function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 140) + "px"; }
+  input.addEventListener("input", autosize);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(input.value); } });
+  $("composer").addEventListener("submit", (e) => { e.preventDefault(); submit(input.value); });
+  document.querySelectorAll(".chip").forEach((c) => c.addEventListener("click", () => submit(c.textContent)));
+
+  $("newChat").addEventListener("click", () => {
+    if (busy) return;
+    conversationId = null; store.set("conversation_id", null);
+    chat.querySelectorAll(":scope > :not(#empty)").forEach((n) => n.remove());
+    $("empty").classList.remove("hidden"); input.focus();
+  });
+  $("logout").addEventListener("click", async () => {
+    await fetch("/logout", { method: "POST" }).catch(() => {});
+    store.set("conversation_id", null); conversationId = null; showSignedOut();
+  });
+
+  function showSignedOut() {
+    for (const id of ["chat", "composer", "who", "newChat", "logout"]) $(id).classList.add("hidden");
+    $("landing").classList.remove("hidden");
+    if (new URLSearchParams(location.search).get("signin") === "failed") $("signinFailed").classList.remove("hidden");
+  }
+
+  async function showSignedIn(me) {
+    $("landing").classList.add("hidden");
+    for (const id of ["chat", "composer", "newChat", "logout"]) $(id).classList.remove("hidden");
+    if (me.name || me.email) { $("who").textContent = me.name || me.email; $("who").classList.remove("hidden"); }
+    if (me.name) $("hello").textContent = `Hi ${me.name.split(" ")[0]}, what are you shopping for?`;
+    if (location.search) history.replaceState(null, "", "/");
+    if (conversationId) {
+      const r = await fetch(`/api/conversation?id=${encodeURIComponent(conversationId)}`);
+      if (r.ok) {
+        const conv = await r.json();
+        for (const item of conv.display) {
+          if (item.role === "user") addUser(item.text);
+          else if (item.role === "assistant") addAssistant(item.text);
+          else if (item.role === "products") addProducts(item.products);
+          else if (item.role === "checkout") addCheckout(item.checkout);
+        }
+      } else { conversationId = null; store.set("conversation_id", null); }
+    }
+    input.focus();
+  }
+
+  fetch("/api/me").then((r) => (r.ok ? r.json().then(showSignedIn) : showSignedOut())).catch(showSignedOut);
+})();
+</script>
+</body>
+</html>

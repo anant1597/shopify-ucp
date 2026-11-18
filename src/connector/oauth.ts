@@ -103,12 +103,16 @@ function issueTokens(clientId: string, customerId: string) {
   return { access_token: access, token_type: "Bearer", expires_in: ACCESS_TTL_S, refresh_token: refresh, scope: "shopping" };
 }
 
-/** After Shop sign-in, reuse the customer we already have for this Shop identity (reconnects keep addresses/orders). */
-function settleCustomer(tempId: string): string {
+/**
+ * After Shop sign-in, reuse the customer we already have for this Shop identity, so the website and the
+ * Claude connector share one customer (addresses, checkouts, orders).
+ */
+export function settleCustomer(tempId: string): string {
   const link = db.prepare("SELECT shop_sub FROM shop_links WHERE customer_id = ?").get(tempId) as any;
   if (!link?.shop_sub) return tempId;
   const existing = db.prepare(
-    "SELECT customer_id FROM shop_links WHERE shop_sub = ? AND customer_id != ? AND customer_id LIKE 'claude:%' LIMIT 1",
+    `SELECT customer_id FROM shop_links WHERE shop_sub = ? AND customer_id != ?
+       AND (customer_id LIKE 'shopper:%' OR customer_id LIKE 'claude:%') ORDER BY linked_at LIMIT 1`,
   ).get(link.shop_sub, tempId) as any;
   if (!existing) return tempId;
   const id = existing.customer_id as string;
@@ -210,7 +214,7 @@ export async function handleConnectorOAuth(req: IncomingMessage, res: ServerResp
     }
 
     const reqId = randomToken(18);
-    const customerId = `claude:${randomUUID()}`; // replaced by the existing customer if this Shop identity connected before
+    const customerId = `shopper:${randomUUID()}`; // replaced by the existing customer if this Shop identity connected before
     db.prepare(
       `INSERT INTO connector_auth_requests (id, client_id, redirect_uri, state, code_challenge, scope, customer_id, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,

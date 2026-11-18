@@ -141,6 +141,26 @@ CREATE TABLE IF NOT EXISTS connector_tokens (
   expires_at   INTEGER NOT NULL
 );
 
+-- Website: sign-in attempts, sessions (cookie token hashed) and chat conversations.
+CREATE TABLE IF NOT EXISTS web_logins (
+  id           TEXT PRIMARY KEY,
+  customer_id  TEXT NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS web_sessions (
+  token_hash   TEXT PRIMARY KEY,
+  customer_id  TEXT NOT NULL,
+  expires_at   INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS web_conversations (
+  id             TEXT PRIMARY KEY,
+  customer_id    TEXT NOT NULL,
+  messages_json  TEXT NOT NULL,           -- Claude API messages, append-only
+  display_json   TEXT NOT NULL,           -- what the UI shows (text + product/checkout cards)
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL
+);
+
 -- Webhook delivery ids we've processed (X-Shopify-Webhook-Id), for de-duplication.
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
   delivery_id  TEXT PRIMARY KEY,
