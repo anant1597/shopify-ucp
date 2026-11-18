@@ -98,6 +98,11 @@ async function prepareViaUcp(
 
   let co = unwrap(await call("create_checkout", { checkout: checkoutBody }));
 
+  // Signed-in buyers get the store's saved address prefilled, sometimes without a phone number
+  // (store message: delivery_phone_number_required). Fill it from the customer's profile.
+  const fill = fillMissingDeliveryPhone(co, customer);
+  if (fill) co = unwrap(await call("update_checkout", { id: co.id, checkout: fill }));
+
   // Pick the cheapest prepaid shipping if the store left a group unselected or defaulted to COD.
   const update = autoSelectShipping(co, checkoutBody);
   if (update) co = unwrap(await call("update_checkout", { id: co.id, checkout: update }));
@@ -629,4 +634,12 @@ async function refetchUntilShippingPlanned(
     co = unwrap(await call("get_checkout", { id: ucpId }));
   }
   return co;
+}
+
+function fillMissingDeliveryPhone(co: any, customer: Customer): Record<string, unknown> | null {
+  if (!customer.phone) return null;
+  const method = co.fulfillment?.methods?.[0];
+  const dest = method?.destinations?.find((d: any) => d.id === method.selected_destination_id) ?? method?.destinations?.[0];
+  if (!dest || dest.phone_number) return null;
+  return bodyFrom(co, customer, { destination: { ...pickDest(dest), phone_number: customer.phone } });
 }
