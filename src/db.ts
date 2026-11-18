@@ -108,6 +108,39 @@ CREATE TABLE IF NOT EXISTS shop_agent_links (
   updated_at         INTEGER NOT NULL
 );
 
+-- Claude custom connector (we are the OAuth server; signing in = Sign in with Shop).
+CREATE TABLE IF NOT EXISTS connector_clients (
+  client_id      TEXT PRIMARY KEY,
+  client_name    TEXT,
+  redirect_uris  TEXT NOT NULL,            -- JSON array
+  created_at     INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS connector_auth_requests (
+  id              TEXT PRIMARY KEY,
+  client_id       TEXT NOT NULL,
+  redirect_uri    TEXT NOT NULL,
+  state           TEXT,
+  code_challenge  TEXT NOT NULL,
+  scope           TEXT,
+  customer_id     TEXT,                    -- set once Shop sign-in completes
+  created_at      INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS connector_codes (
+  code_hash       TEXT PRIMARY KEY,
+  client_id       TEXT NOT NULL,
+  redirect_uri    TEXT NOT NULL,
+  code_challenge  TEXT NOT NULL,
+  customer_id     TEXT NOT NULL,
+  expires_at      INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS connector_tokens (
+  token_hash   TEXT PRIMARY KEY,           -- sha256 of the token; tokens themselves are never stored
+  kind         TEXT NOT NULL,              -- access | refresh
+  client_id    TEXT NOT NULL,
+  customer_id  TEXT NOT NULL,
+  expires_at   INTEGER NOT NULL
+);
+
 -- Webhook delivery ids we've processed (X-Shopify-Webhook-Id), for de-duplication.
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
   delivery_id  TEXT PRIMARY KEY,
@@ -116,7 +149,10 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 `);
 
 // Additive migrations for databases created before a column existed.
-for (const sql of ["ALTER TABLE checkouts ADD COLUMN max_total_minor INTEGER"]) {
+for (const sql of [
+  "ALTER TABLE checkouts ADD COLUMN max_total_minor INTEGER",
+  "ALTER TABLE customers ADD COLUMN last_ip TEXT", // last IP seen from the customer's own browser
+]) {
   try {
     db.exec(sql);
   } catch {

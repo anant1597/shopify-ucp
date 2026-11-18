@@ -6,6 +6,8 @@ import { buildMcpServer } from "./mcp.ts";
 import { handleShopCallback } from "./auth/shopIdentity.ts";
 import { resolvePayLink } from "./services/checkout.ts";
 import { ingestOrderWebhook, verifyOrderWebhook } from "./services/orders.ts";
+import { CONNECTOR_PATH, customerForAccessToken, handleConnectorOAuth, resourceMetadataUrl } from "./connector/oauth.ts";
+import { buildConnectorServer } from "./connector/tools.ts";
 
 // Agent profile, with our order webhook URL filled in (UCP: order capability config.webhook_url).
 const agentProfile = (() => {
@@ -117,6 +119,28 @@ const server = createServer(async (req, res) => {
       return transport.handleRequest(req, res, await readJson(req));
     }
 
+    // Claude custom connector: OAuth (sign in with Shop) + customer-bound MCP tools.
+    if (await handleConnectorOAuth(req, res, url)) return;
+    if (url.pathname === CONNECTOR_PATH) {
+      const customerId = customerForAccessToken(req.headers.authorization);
+      if (!customerId) {
+        res.writeHead(401, {
+          "content-type": "application/json",
+          "www-authenticate": `Bearer resource_metadata="${resourceMetadataUrl()}"`,
+        });
+        return res.end(JSON.stringify({ error: "invalid_token" }));
+      }
+      if (req.method !== "POST") return send(res, 405, "Method not allowed");
+      const mcp = buildConnectorServer(customerId);
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+      res.on("close", () => {
+        void transport.close();
+        void mcp.close();
+      });
+      await mcp.connect(transport);
+      return transport.handleRequest(req, res, await readJson(req));
+    }
+
     if (url.pathname === "/health") return send(res, 200, "ok");
     send(res, 404, "Not found");
   } catch (e) {
@@ -129,5 +153,6 @@ server.listen(config.port, () => {
   console.log(`UCP checkout service on :${config.port}`);
   console.log(`  agent profile : ${config.agentProfileUrl}`);
   console.log(`  shop redirect : ${config.shopRedirectUri}`);
+  console.log(`  claude connector: ${config.publicBaseUrl}${CONNECTOR_PATH}`);
   console.log(`  partners      : ${[...config.partnerApiKeys.values()].join(", ") || "(none — set PARTNER_API_KEYS)"}`);
 });

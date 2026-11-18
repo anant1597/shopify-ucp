@@ -30,6 +30,35 @@ customer ── /pay/<token> ──302──▶ store checkout page (pays by car
 the order, and only trusted agents with a payment handler can use it. Indian stores don't publish
 payment handlers, so the pay link is the only route anyway (and it keeps us out of PCI scope).
 
+## Claude custom connector (customer front end)
+
+A customer adds `${PUBLIC_BASE_URL}/connector/mcp` in Claude → Settings → Connectors → Add custom connector
+(no client ID/secret needed). Connecting runs our OAuth server, and the login **is** Sign in with Shop:
+
+```
+Claude ── register (DCR) ─▶ /oauth/register
+Claude ── browser ───────▶ /oauth/authorize ─302─▶ accounts.shop.app (customer signs in; Shop does any OTP)
+                         ◀─ /auth/shop/callback ─▶ /oauth/signed-in
+                              "Connected as …"  [Turn on order tracking (optional, approve on Shop)]  [Continue to Claude]
+                         ─▶ /oauth/finish ─302─▶ Claude callback with code
+Claude ── code + PKCE ───▶ /oauth/token → access (1h) + rotating refresh (60d); only hashes stored
+Claude ── Bearer ────────▶ /connector/mcp  (tools bound to that customer)
+```
+
+- Tools: `get_my_profile`, `update_my_details`, `add_address`, `search_products`, `prepare_checkout`,
+  `get_checkout_options`, `update_checkout`, `get_checkout_status`, `cancel_checkout`, `get_order`,
+  `connect_order_tracking`, `list_my_orders`, `get_my_order`, `get_cancellation_options`, `ask_store`.
+  None take a customer id: the customer is whoever signed in.
+- **Buyer IP:** Claude's servers call us, so we use the IP the customer's own browser showed during
+  connect (`customers.last_ip`). If it's missing, tools ask the customer to reconnect.
+- Reconnecting with the same Shop account reuses the same customer (matched on Shop `sub`).
+- **One approval vs two:** checkout sign-in uses our agent client; order tracking needs `personal_agent`,
+  which our client is refused (`access_denied`), so it's a second, optional approval with Shop's prototyping
+  client. Shop does accept both scopes in one request from a client that has `personal_agent`, so once
+  Shopify enables it for our client the two approvals become one.
+- `PUBLIC_BASE_URL` must be stable: Claude stores the connector URL, and the Shop redirect URL
+  (`/auth/shop/callback`) registered in Dev Dashboard must match it.
+
 ## After payment: orders, cancellation, store questions
 
 | Tool | What it does |
@@ -126,7 +155,9 @@ Probe stores: `npm run probe -- www.boat-lifestyle.com snitch.co.in`
 
 ```
 src/server.ts              HTTP: /.well-known/ucp, /auth/shop/*, /pay/:token, /mcp
-src/mcp.ts                 MCP tools for agents
+src/mcp.ts                 MCP tools for agents (API key)
+src/connector/oauth.ts     OAuth server for the Claude connector (login = Sign in with Shop)
+src/connector/tools.ts     customer-bound MCP tools for the Claude connector
 src/services/checkout.ts   prepare → pay link, status, permalink fallback
 src/services/catalog.ts    Global Catalog / per-store search
 src/services/customers.ts  customers, addresses, phone normalisation
