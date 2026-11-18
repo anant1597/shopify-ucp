@@ -23,7 +23,10 @@ export function buildConnectorServer(customerId: string) {
     {
       instructions:
         "Shop on Shopify stores that deliver in India for the signed-in customer. Flow: search_products → confirm the " +
-        "item, size/variant, quantity and delivery address with the customer → prepare_checkout → give them the pay link. " +
+        "item, size/variant and quantity → prepare_checkout → give them the pay link. Call get_my_profile first and only " +
+        "ask for what it lacks: never ask for a phone it already has. With no saved address, a Shop-signed-in customer's " +
+        "checkout uses the address in their Shop account (shown in the checkout messages); tell them where it will ship " +
+        "and ask for an address only if there is none or they want another. " +
         "Nothing is ever bought or paid by these tools: the customer pays on the store's own checkout page. " +
         "Prefer stores whose prices are in INR. Show prices in ₹.",
     },
