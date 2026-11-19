@@ -190,6 +190,39 @@ async function prepareViaUcp(
   return reviewOf(row, co, saved);
 }
 
+/**
+ * The address in the customer's Shop account, read by opening a throwaway checkout (signed in as them) on the store
+ * they're buying from: the store prefills its Shop address. The checkout is cancelled straight away and never shown.
+ * Saves the address (source 'shop') and returns its id, or null if the store prefilled nothing.
+ */
+export async function loadShopAddressVia(customerId: string, storeDomain: string, variantId: string, buyerIp?: string): Promise<string | null> {
+  const store = await discoverStore(storeDomain);
+  if (!store.checkoutOk || !store.mcpEndpoint) return null;
+  const token = await getStoreBuyerToken(customerId, store.domain).catch(() => null);
+  if (!token) return null; // not signed in with Shop for this store: nothing would be prefilled
+  const call = (tool: string, args: Record<string, unknown>, extra: { idempotencyKey?: string } = {}) =>
+    callUcpTool<any>(store.mcpEndpoint!, tool, args, { token, buyerIp, ...extra });
+  const co = unwrap(await call("create_checkout", {
+    checkout: {
+      line_items: [{ item: { id: toGid(variantId) }, quantity: 1 }],
+      context: { address_country: "IN", currency: "INR", language: "en-IN" },
+    },
+  }));
+  try {
+    let cur = co;
+    for (let i = 0; i < 3; i++) {
+      const m = cur.fulfillment?.methods?.[0];
+      const dest = m?.destinations?.find((d: any) => d.id === m.selected_destination_id) ?? m?.destinations?.[0];
+      if (dest) return saveShopAddress(customerId, { ...dest, id: undefined });
+      await new Promise((r) => setTimeout(r, 800));
+      cur = unwrap(await call("get_checkout", { id: co.id }));
+    }
+    return null;
+  } finally {
+    await call("cancel_checkout", { id: co.id }, { idempotencyKey: randomUUID() }).catch(() => {});
+  }
+}
+
 /** Does the store deliver to the checkout's address, and how? Read from its shipping plan and messages. */
 export function deliveryCheck(co: any): DeliveryCheck {
   const method = co.fulfillment?.methods?.[0];
@@ -201,14 +234,20 @@ export function deliveryCheck(co: any): DeliveryCheck {
   if (!dest) return { deliverable: null, address, pincode, reason: "No delivery address on the checkout yet." };
   const groups: any[] = (co.fulfillment?.methods ?? []).flatMap((m: any) => m.groups ?? []);
   const withOptions = groups.filter((g) => g.options?.length);
-  const problem = (co.messages ?? []).find(
-    (m: any) => (m.severity ?? m.type) !== "info" && /ship|deliver|fulfil|address|postal|pin ?code|zip|region|serviceab/i.test(`${m.code ?? ""} ${m.content ?? ""} ${m.path ?? ""}`),
-  );
+  const problem = (co.messages ?? []).find((m: any) => {
+    const sev = String(m.severity ?? m.type ?? "");
+    const code = String(m.code ?? "");
+    const text = `${code} ${m.content ?? m.text ?? ""} ${m.path ?? ""}`;
+    if (sev === "info" || /summary/i.test(code)) return false; // e.g. checkout_summary: "… ₹500 shipping to <address>"
+    if (!/ship|deliver|fulfil|address|postal|pin ?code|zip|region|serviceab/i.test(text)) return false;
+    // A delivery word alone isn't a failure: the message must be an error, or say something is wrong/missing.
+    return /error|unrecoverable/i.test(sev) || /invalid|unavailable|not[ _]|cannot|can't|unable|unsupported|required|missing|no[ _]|undeliver|unservice|restrict/i.test(text);
+  });
   // Stores can still list a shipping option for an address they reject (seen: "Free shipping" alongside
   // delivery_invalid_postal_code_for_country), so a delivery/address error message wins over the options.
   if (problem) {
-    const text = problem.content ?? problem.code;
-    if (/phone/i.test(`${problem.code ?? ""} ${problem.content ?? ""}`)) {
+    const text = problem.content ?? problem.text ?? problem.code;
+    if (/phone/i.test(`${problem.code ?? ""} ${text}`)) {
       return { deliverable: null, address, pincode, reason: `The store needs a phone number for delivery (${text}).` };
     }
     return { deliverable: false, address, pincode, reason: text };

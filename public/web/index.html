@@ -141,6 +141,9 @@
   .addr .new { background: none; border: 1px dashed var(--line); border-radius: 12px; padding: 10px; font-size: 14px; font-weight: 600; color: var(--brand); }
   .addr form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .addr form .full { grid-column: 1 / -1; }
+  .addr form.pin { grid-template-columns: 1fr auto; }
+  .addr form.pin button { grid-column: auto; padding: 9px 14px; }
+  .addr .fine { margin: 0; color: var(--muted); font-size: 12px; }
   .addr input, .addr select { font: inherit; font-size: 14px; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; width: 100%; min-width: 0; }
   .addr form button { grid-column: 1 / -1; background: var(--brand); color: #fff; border: 0; border-radius: 12px; padding: 11px; font-weight: 650; }
   .addr .err { grid-column: 1 / -1; color: var(--warn); font-size: 13px; margin: 0; }
@@ -408,9 +411,10 @@
     const list = a.list || [];
     d.innerHTML = `<h3>Where should we deliver?</h3>
       ${list.map((x, i) => `<button type="button" class="opt" data-i="${i}"><span>${esc(x.address)}${x.from_shop ? '<span class="tag">From Shop</span>' : ""}${x.is_default ? '<span class="tag">Default</span>' : ""}</span>${x.name ? `<small>${esc(x.name)}</small>` : ""}</button>`).join("")}
-      ${!list.length && a.shop_option ? `<button type="button" class="opt" data-shop="1"><span>The address in my Shop account</span><small>The store fills it in; you'll see it before confirming</small></button>` : ""}
+      ${a.note ? `<p class="fine">${esc(a.note)}</p>` : ""}
+      ${a.ask_pincode ? `<form class="pin" novalidate><input name="pin" placeholder="Pincode" inputmode="numeric" maxlength="6" autocomplete="postal-code" value="${esc(a.pincode || "")}"><button type="submit">${list.length ? "Use another pincode" : "Deliver to this pincode"}</button></form>` : ""}
       <button type="button" class="new">+ Enter a new address</button>
-      <form class="hidden" novalidate>
+      <form class="hidden full-form" novalidate>
         <input class="full" name="name" placeholder="Full name" autocomplete="name">
         <input class="full" name="line1" placeholder="House / flat, street" autocomplete="address-line1" required>
         <input class="full" name="line2" placeholder="Area, landmark (optional)" autocomplete="address-line2">
@@ -420,14 +424,21 @@
         <p class="err hidden"></p>
         <button type="submit">Deliver here</button>
       </form>`;
-    const lock = (picked) => { d.querySelectorAll(".opt, .new").forEach((b) => (b.disabled = true)); picked?.classList.add("picked"); d.querySelector("form").classList.add("hidden"); };
+    const form = d.querySelector("form.full-form");
+    const lock = (picked) => { d.querySelectorAll(".opt, .new, form.pin button").forEach((b) => (b.disabled = true)); picked?.classList.add("picked"); form.classList.add("hidden"); };
     d.querySelectorAll(".opt[data-i]").forEach((b) => b.addEventListener("click", () => {
       if (busy) return;
       const x = list[+b.dataset.i]; lock(b);
       submit(`Deliver to ${x.address}`, { address_id: x.address_id });
     }));
-    d.querySelector(".opt[data-shop]")?.addEventListener("click", (ev) => { if (busy) return; lock(ev.currentTarget); submit("Use the address in my Shop account."); });
-    const form = d.querySelector("form");
+    d.querySelector("form.pin")?.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      if (busy) return;
+      const pin = ev.currentTarget.pin.value.trim();
+      if (!/^\d{6}$/.test(pin)) { ev.currentTarget.pin.focus(); return; }
+      lock(null);
+      submit(`Deliver to pincode ${pin}`);
+    });
     d.querySelector(".new").addEventListener("click", () => { form.classList.toggle("hidden"); form.querySelector("[name=name]").focus(); scroll(); });
     form.addEventListener("submit", async (ev) => {
       ev.preventDefault();

@@ -165,34 +165,56 @@ export async function getProductDetails(input: ProductDetailsInput) {
 
   const stillToChoose = choose.filter((n) => !chosen.some((c) => c.name === n));
   let variant: ReturnType<typeof simplifyVariant> | null = null;
+  let otherStores: { store: string | undefined; variant_id: string; price: any }[] = [];
   if (chosen.length) {
     res = await call(chosen);
     p = res.product ?? res;
   }
   if (!problems.length && !stillToChoose.length) {
     const want = Object.fromEntries(chosen.map((c) => [c.name, c.label]));
-    const v = (p.variants ?? []).find((x: any) => {
+    const matching = (p.variants ?? []).filter((x: any) => {
       const o = variantOptions(x) ?? {};
       return Object.entries(want).every(([k, val]) => o[k] === val);
-    }) ?? (choose.length ? undefined : p.variants?.[0]);
+    });
+    // A catalog product (gid://shopify/p/…) groups the same item from many stores, so the variants list mixes
+    // sellers. Only the requested store's variant counts; the others are offered as alternatives.
+    const isAvailable = (x: any) => (x.availability?.available ?? x.available) !== false;
+    const store = bare(input.store);
+    const mine = store ? matching.filter((x: any) => bare(shopDomainOf(x) ?? shopDomainOf(p)) === store) : matching;
+    const v = mine.find(isAvailable) ?? mine[0];
     if (v) variant = simplifyVariant(v, p);
+    else if (store && matching.length) problems.push(`${input.store} doesn't sell ${chosen.map((c) => `${c.name} ${c.label}`).join(", ") || "this item"}`);
     else problems.push(`The store has no variant for ${chosen.map((c) => `${c.name} ${c.label}`).join(", ")}`);
+    if (!v || !isAvailable(v)) {
+      otherStores = matching
+        .filter((x: any) => x !== v && isAvailable(x) && bare(shopDomainOf(x)) !== store)
+        .slice(0, 5)
+        .map((x: any) => ({ store: shopDomainOf(x), variant_id: x.id, price: money(x.price) }));
+    }
   }
 
   return {
     product_id: p.id,
-    title: p.title,
+    title: variant?.title ?? p.title,
     store: input.store ?? shopDomainOf(p) ?? (p.variants?.[0] ? shopDomainOf(p.variants[0]) : undefined),
     image: cleanUrl(p.variants?.[0]?.media?.[0]?.url ?? p.media?.[0]?.url),
-    price_range: p.price_range ? { min: money(p.price_range.min), max: money(p.price_range.max) } : undefined,
+    price_range: variant?.price
+      ? { min: variant.price, max: variant.price }
+      : p.price_range ? { min: money(p.price_range.min), max: money(p.price_range.max) } : undefined,
+    // For catalog products the options cover every store that sells it; the variant below is the one store's.
     options,
     selected: Object.fromEntries(chosen.map((c) => [c.name, c.label])),
     ...(stillToChoose.length ? { still_to_choose: stillToChoose } : {}),
     ...(problems.length ? { problems } : {}),
     variant,
-    ...(variant && variant.available === false ? { warning: "This combination is sold out." } : {}),
+    ...(variant && variant.available === false ? { warning: `This combination is sold out at ${variant.store ?? "this store"}.` } : {}),
+    ...(otherStores.length
+      ? { other_stores_in_stock: otherStores, note: "Same item and options in stock at these stores (use one's variant_id with its store)." }
+      : {}),
   };
 }
+
+const bare = (d?: string) => d?.toLowerCase().replace(/^www\./, "") || undefined;
 
 function shopDomainOf(x: any): string | undefined {
   const seller = x?.seller ?? x?.shop ?? x?.merchant;

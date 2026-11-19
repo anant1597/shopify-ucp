@@ -6,7 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { db } from "../db.ts";
 import { getProductDetails, searchProducts } from "../services/catalog.ts";
-import { CheckoutRejected, confirmCheckout, listCustomerOrders, getCheckoutOptions, getCheckoutStatus, prepareCheckout, updateCheckout } from "../services/checkout.ts";
+import { CheckoutRejected, confirmCheckout, loadShopAddressVia, listCustomerOrders, getCheckoutOptions, getCheckoutStatus, prepareCheckout, updateCheckout } from "../services/checkout.ts";
 import { askStore, cancelUnpaidCheckout, getCancellationOptions, getOrder } from "../services/orders.ts";
 import { getShopOrder, isShopOrdersConnected, listShopOrders, startShopOrdersSignIn } from "../services/shopMcp.ts";
 import { addAddress, getCustomer, upsertCustomer } from "../services/customers.ts";
@@ -24,17 +24,31 @@ const READ = { readOnlyHint: true, openWorldHint: true } as const;
  * assistant can't check out search's example variant without asking. In memory: after a restart nothing is
  * blocked (the variant is simply unknown).
  */
-type Choices = { needs: Map<string, { title: string; options: string[] }>; chosen: Set<string> };
+type Choices = {
+  needs: Map<string, { title: string; options: string[] }>;
+  chosen: Set<string>;
+  /** Pincode the customer is shopping for (picked address or typed pincode): used for stock and delivery checks. */
+  pincode?: string;
+  /** Last exact variant the customer settled on, so we can read their Shop address from that store. */
+  pick?: { store: string; variant_id: string };
+  shopAddressTried: Set<string>;
+};
 const choiceState = new Map<string, Choices>();
 function choicesFor(customerId: string): Choices {
   let c = choiceState.get(customerId);
   if (!c) {
     if (choiceState.size >= 2000) choiceState.delete(choiceState.keys().next().value!);
-    c = { needs: new Map(), chosen: new Set() };
+    c = { needs: new Map(), chosen: new Set(), shopAddressTried: new Set() };
     choiceState.set(customerId, c);
   }
   if (c.needs.size > 1000) c.needs.clear();
   return c;
+}
+
+/** Remember the address the customer picked (website picker): its pincode drives stock and delivery checks. */
+export function rememberDeliveryAddress(customerId: string, addressId: string) {
+  const row = db.prepare("SELECT pincode FROM addresses WHERE id = ? AND customer_id = ?").get(addressId, customerId) as any;
+  if (row?.pincode) choicesFor(customerId).pincode = row.pincode;
 }
 
 export function buildConnectorServer(customerId: string) {
@@ -43,24 +57,27 @@ export function buildConnectorServer(customerId: string) {
     {
       instructions:
         "Shop on Shopify stores that deliver in India for the signed-in customer. Go through every check with the " +
-        "customer before giving a pay link: 1) search_products; 2) if the product has options (customer_must_choose, " +
-        "e.g. Size, Color), ask the customer to pick each one and the quantity in one question, listing the choices, " +
-        "then get_product_details with their picks for the exact variant_id (never pick an option for them); " +
-        "3) ask where to deliver: call get_delivery_addresses and let the customer pick from the list (their saved " +
-        "addresses and the ones from their Shop account, numbered, one line each with pincode); only if none suits them, " +
-        "take a new one (add_address: line 1, city, state, 6-digit pincode). If the list is empty but " +
-        "shop_checkout_address_available, offer the address in their Shop account (use_shop_address). Never ask them " +
-        "to type an address that's already in the list, and never ask for a phone the profile already has; " +
-        "4) prepare_checkout builds the order on the store and returns a " +
-        "review with no pay link: it checks the store delivers to that pincode and gives the delivery option and total; " +
-        "if it doesn't deliver, say so and ask for another address; 5) show the review (item, options, quantity, " +
-        "address, delivery, contact details, total) and ask the customer to confirm; 6) only after they say yes, confirm_checkout returns " +
+        "customer before giving a pay link: 1) first settle where to deliver, before searching: call " +
+        "get_delivery_addresses and let the customer pick one (numbered, one line each with pincode), or take just a " +
+        "pincode (set_delivery_pincode) if they have none or want somewhere else; this makes search show only items " +
+        "in stock that ship there; 2) search_products (the pincode is applied for you); 3) if the product has options " +
+        "(customer_must_choose, e.g. Size, Color), ask the customer to pick each one and the quantity in one question, " +
+        "listing the choices, then get_product_details with their picks for the exact variant_id at that store (never " +
+        "pick an option for them). If it's sold out there, it lists other_stores_in_stock: offer those; 4) if they gave " +
+        "only a pincode, call get_delivery_addresses again: it now includes the address from their Shop account (read " +
+        "from that store); let them pick it or take a new one with add_address (line 1, city, state, 6-digit pincode). " +
+        "Never ask them to type an address that's already in the list, or for a phone the profile already has; " +
+        "5) prepare_checkout builds the order on the store and returns a review with no pay link: it checks the store " +
+        "delivers to that address and gives the delivery option and total; if it doesn't deliver, say so and ask for " +
+        "another address or offer another store; 6) show the review (item, options, quantity, address, delivery, " +
+        "contact details, total) and ask the customer to confirm; 7) only after they say yes, confirm_checkout returns " +
         "the pay link, and the store's page opens with their name, phone, email and address filled in. " +
         "Nothing is ever bought or paid by these tools: the customer pays on the store's own checkout page. " +
         "Prefer stores whose prices are in INR. Show prices in ₹.",
     },
   );
 
+  const lastIp = () => ((db.prepare("SELECT last_ip FROM customers WHERE id = ?").get(customerId) as any)?.last_ip as string | undefined) ?? undefined;
   const buyerIp = () => {
     const row = db.prepare("SELECT last_ip FROM customers WHERE id = ?").get(customerId) as any;
     if (!row?.last_ip) throw new CheckoutRejected("Reconnect the connector in Claude settings so we can verify your location.");
@@ -106,13 +123,57 @@ export function buildConnectorServer(customerId: string) {
     {
       title: "Delivery addresses to choose from",
       description:
-        "The customer's delivery addresses to offer as a pick list: ones saved here plus the ones in their Shop " +
-        "account (from_shop). Show them numbered, one line each with the pincode, and let the customer pick; offer " +
-        "'a new address' as the last choice. Use the chosen address_id with prepare_checkout.",
+        "The customer's delivery addresses to offer as a pick list: ones saved here and the ones from their Shop " +
+        "account (from_shop). Call it before searching to settle where to deliver. Once they've chosen a product, " +
+        "calling it again also reads their Shop account address from that store if it isn't in the list yet. Show " +
+        "them numbered, one line each with the pincode, and let the customer pick; offer 'a new address' as the last " +
+        "choice. Use the chosen address_id with prepare_checkout.",
       inputSchema: {},
       annotations: READ,
     },
-    guard(() => listDeliveryAddresses(customerId)),
+    guard(async () => {
+      const c = choicesFor(customerId);
+      let r = await listDeliveryAddresses(customerId);
+      let shopNote: string | undefined;
+      if (isShopLinked(customerId) && !r.addresses.some((x) => x.from_shop)) {
+        if (c.pick && !c.shopAddressTried.has(c.pick.store)) {
+          c.shopAddressTried.add(c.pick.store);
+          const id = await loadShopAddressVia(customerId, c.pick.store, c.pick.variant_id, lastIp()).catch((e) => {
+            console.warn("[addresses] couldn't read the Shop address:", (e as Error).message);
+            return null;
+          });
+          if (id) r = await listDeliveryAddresses(customerId);
+          else shopNote = "Their Shop account has no address this store could read.";
+        } else if (!c.pick) {
+          shopNote = "Their Shop account address appears here after they choose a product (it's read from that store).";
+        }
+      }
+      const current = c.pincode ? r.addresses.find((x) => x.pincode === c.pincode) : undefined;
+      return {
+        ...r,
+        shop_checkout_address_available: false,
+        delivery_pincode: c.pincode ?? null,
+        ...(current ? { current_address_id: current.address_id } : {}),
+        ...(shopNote ? { note: shopNote } : {}),
+      };
+    }),
+  );
+
+  server.registerTool(
+    "set_delivery_pincode",
+    {
+      title: "Deliver to pincode",
+      description:
+        "Remember the pincode the customer wants delivery to, when they give a pincode instead of picking a saved " +
+        "address. Search and product details then check stock and shipping for it. A full address is still needed " +
+        "before prepare_checkout.",
+      inputSchema: { pincode: z.string().regex(/^\d{6}$/).describe("6-digit Indian pincode") },
+      annotations: { idempotentHint: true },
+    },
+    guard((a) => {
+      choicesFor(customerId).pincode = a.pincode;
+      return { delivery_pincode: a.pincode };
+    }),
   );
 
   server.registerTool(
@@ -184,7 +245,9 @@ export function buildConnectorServer(customerId: string) {
       annotations: READ,
     },
     guard(async (a) => {
-      const r: any = await searchProducts({ ...a, limit: a.limit ?? 8 });
+      const pincode = a.pincode ?? choicesFor(customerId).pincode;
+      const r: any = await searchProducts({ ...a, pincode, limit: a.limit ?? 8 });
+      if (pincode) r.delivery_pincode = pincode;
       // Some stores ignore the catalog price filter, so enforce it here.
       if (a.max_price_inr != null) {
         r.products = r.products.filter((p: any) => {
@@ -219,12 +282,18 @@ export function buildConnectorServer(customerId: string) {
       annotations: READ,
     },
     guard(async (a) => {
-      const d = await getProductDetails({ ...a, buyer_ip: (db.prepare("SELECT last_ip FROM customers WHERE id = ?").get(customerId) as any)?.last_ip ?? undefined });
       const c = choicesFor(customerId);
-      if (d.variant && !d.still_to_choose && !d.problems) {
-        c.chosen.add(d.variant.variant_id);
-        c.needs.delete(d.variant.variant_id);
-      }
+      const d = await getProductDetails({ ...a, pincode: a.pincode ?? c.pincode, buyer_ip: lastIp() });
+      const settle = (variantId: string, store?: string) => {
+        c.chosen.add(variantId);
+        c.needs.delete(variantId);
+        if (store) c.pick = { store, variant_id: variantId };
+      };
+      if (d.variant && !d.still_to_choose && !d.problems) settle(d.variant.variant_id, d.variant.available !== false ? d.variant.store ?? d.store : undefined);
+      // Same item and options at other stores: the customer's choice is already made, so those variants are fine too.
+      for (const o of (d as any).other_stores_in_stock ?? []) { c.chosen.add(o.variant_id); c.needs.delete(o.variant_id); }
+      const others = (d as any).other_stores_in_stock ?? [];
+      if (d.variant?.available === false && others[0]?.store) c.pick = { store: others[0].store, variant_id: others[0].variant_id };
       return d;
     }),
   );
@@ -272,6 +341,8 @@ export function buildConnectorServer(customerId: string) {
       if (a.use_shop_address && !a.address_id && !isShopLinked(customerId)) {
         throw new CheckoutRejected("The customer isn't signed in with Shop, so there's no Shop address. Ask for an address and save it with add_address.");
       }
+      if (a.address_id) rememberDeliveryAddress(customerId, a.address_id);
+      choicesFor(customerId).pick = { store: a.store, variant_id: a.items[0].variant_id };
       const { use_shop_address, ...rest } = a;
       return prepareCheckout({
         ...rest, customer_id: customerId, buyer_ip: buyerIp(), partner: "claude",

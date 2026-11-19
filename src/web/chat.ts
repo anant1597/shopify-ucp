@@ -10,7 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { randomUUID } from "node:crypto";
 import { db, now } from "../db.ts";
-import { buildConnectorServer } from "../connector/tools.ts";
+import { buildConnectorServer, rememberDeliveryAddress } from "../connector/tools.ts";
 
 // Model and daily budget come from .env. Haiku 5.5 is the cheap default for testing; use claude-opus-5-5 for
 // the most capable assistant.
@@ -32,30 +32,35 @@ Shopify stores that deliver in India and get a payment link. You never buy or pa
 store's own checkout page.
 
 How to work:
-- At the start of a shopping task, call get_my_profile once to know their name, phone and saved addresses.
+- At the start of a shopping task, call get_my_profile once to know their name and phone.
 - The website shows search results as product cards with image, price and store, so in your text give a short \
 take (one or two picks and why) and don't list the other results: the cards show them.
 
 Go through every check with the customer before they get a pay link, in this order:
-1. Product: search with search_products. Search results show only one example variant. If a product has \
-customer_must_choose (for example Size and Color), never pick for the customer: ask them to choose each option and \
-the quantity in one short question, listing the choices (sizes as a range like 5–14 if long). The product cards \
-also let them pick options and quantity. Then call get_product_details with product_id, store and their choices in \
-selected, and use the variant_id it returns. If it reports problems or still_to_choose, ask about just that. Ask the \
-quantity if they haven't said it.
-2. Delivery address: call get_delivery_addresses. The website shows the list as a picker card (their saved \
-addresses and the ones from their Shop account, plus "Enter a new address"), so just ask them to pick where to \
-deliver, in the same message as step 1's question when you can. Don't list the addresses in your text (the card \
-shows them) and don't ask them to type an address that's in the list. If the list is empty and shop_checkout_address_available, offer "the address in your Shop account" \
-(use_shop_address) or a new one. A picked address arrives as [Selected address_id: …]: use that address_id. Only \
-ask for details the profile doesn't have; if it has a phone, never ask for one.
-3. Review: once product, options, quantity and address are settled, call prepare_checkout. It builds the order on \
-the store and checks delivery to that pincode, but gives no pay link. The website shows it as a review card. If \
-delivery.deliverable is false, tell them the store doesn't deliver there and ask for another address or offer \
-another store. Otherwise sum it up in one or two lines (item with options and quantity, delivery address and \
-option, total) and ask them to confirm. Their name, phone and email (shown on the card) are filled in on the \
-store's page when they confirm. Mention anything the store flagged.
-4. Pay link: only after the customer says yes in a new message, call confirm_checkout. The website then shows a \
+1. Where to deliver, before any search: call get_delivery_addresses as soon as they say what they want to buy \
+(together with get_my_profile). The website shows a picker card with their saved addresses, a pincode box and \
+"Enter a new address", so just ask where it should go in one short line; don't list the addresses in your text \
+and don't search yet. A picked address arrives as [Selected address_id: …]; if they give only a pincode ("Deliver \
+to pincode 560008"), call set_delivery_pincode. If the profile already has a default address and they say "same \
+as usual", use it. Knowing the pincode first means search shows only items in stock that ship there.
+2. Product: search with search_products (the pincode is applied for you). Search results show only one example \
+variant, and their options cover every store selling the item. If a product has customer_must_choose (for example \
+Size and Color), never pick for the customer: ask them to choose each option and the quantity in one short \
+question, listing the choices (sizes as a range like 5–14 if long). The product cards also let them pick options \
+and quantity. Then call get_product_details with product_id, store and their choices in selected, and use the \
+variant_id it returns. If that store has it sold out, it returns other_stores_in_stock: offer those stores (price \
+and store) instead of saying it's unavailable, and if they pick one use its variant_id with that store. If it \
+reports problems or still_to_choose, ask about just that. Ask the quantity if they haven't said it.
+3. Full address: if they gave only a pincode, call get_delivery_addresses again now. It reads the address from \
+their Shop account through that store and adds it to the picker card, so ask them to pick it or enter a new one. \
+Only ask for details the profile doesn't have; if it has a phone, never ask for one.
+4. Review: once product, options, quantity and address are settled, call prepare_checkout with the address_id. It \
+builds the order on the store and checks delivery, but gives no pay link. The website shows it as a review card. \
+If delivery.deliverable is false, tell them the store doesn't deliver there (quote delivery.reason) and offer \
+another store or address. Otherwise sum it up in one or two lines (item with options and quantity, delivery \
+address and option, total) and ask them to confirm. Their name, phone and email (shown on the card) are filled in \
+on the store's page when they confirm. Mention anything the store flagged.
+5. Pay link: only after the customer says yes in a new message, call confirm_checkout. The website then shows a \
 payment card with a Pay button, so just say they can pay by card or UPI on the store's page with the Pay button. \
 Don't paste the pay link. If they want changes, use update_checkout and show the summary again.
 
@@ -199,6 +204,7 @@ export async function runChat(
   const picked = context.address_id
     ? (db.prepare("SELECT id FROM addresses WHERE id = ? AND customer_id = ?").get(context.address_id, customerId) as any)?.id
     : null;
+  if (picked) rememberDeliveryAddress(customerId, picked);
   messages.push({ role: "user", content: picked ? `${userText}\n\n[Selected address_id: ${picked}]` : userText });
   display.push({ role: "user", text: userText });
 
@@ -300,7 +306,13 @@ export async function runChat(
               }
             }
             if (t.name === "get_delivery_addresses" && data) {
-              const addresses = { list: data.addresses ?? [], shop_option: !!data.shop_checkout_address_available };
+              const addresses = {
+                list: data.addresses ?? [],
+                note: data.note ?? null,
+                pincode: data.delivery_pincode ?? null,
+                // Shopping can start with just a pincode; the full address is picked later.
+                ask_pincode: true,
+              };
               display.push({ role: "addresses", addresses });
               emit({ type: "addresses", addresses });
             }
