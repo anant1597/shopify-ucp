@@ -5,7 +5,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { db } from "../db.ts";
-import { searchProducts } from "../services/catalog.ts";
+import { getProductDetails, searchProducts } from "../services/catalog.ts";
 import { CheckoutRejected, getCheckoutOptions, getCheckoutStatus, prepareCheckout, updateCheckout } from "../services/checkout.ts";
 import { askStore, cancelUnpaidCheckout, getCancellationOptions, getOrder } from "../services/orders.ts";
 import { getShopOrder, isShopOrdersConnected, listShopOrders, startShopOrdersSignIn } from "../services/shopMcp.ts";
@@ -17,13 +17,34 @@ const fail = (msg: string) => ({ content: [{ type: "text" as const, text: msg }]
 
 const READ = { readOnlyHint: true, openWorldHint: true } as const;
 
+/**
+ * Per customer: variants seen in search whose product has size/colour/etc. choices, and the variants actually
+ * resolved from the customer's choices. prepare_checkout refuses the first kind until it becomes the second, so an
+ * assistant can't check out search's example variant without asking. In memory: after a restart nothing is
+ * blocked (the variant is simply unknown).
+ */
+type Choices = { needs: Map<string, { title: string; options: string[] }>; chosen: Set<string> };
+const choiceState = new Map<string, Choices>();
+function choicesFor(customerId: string): Choices {
+  let c = choiceState.get(customerId);
+  if (!c) {
+    if (choiceState.size >= 2000) choiceState.delete(choiceState.keys().next().value!);
+    c = { needs: new Map(), chosen: new Set() };
+    choiceState.set(customerId, c);
+  }
+  if (c.needs.size > 1000) c.needs.clear();
+  return c;
+}
+
 export function buildConnectorServer(customerId: string) {
   const server = new McpServer(
     { name: "india-shopify-shopping", version: "0.1.0" },
     {
       instructions:
-        "Shop on Shopify stores that deliver in India for the signed-in customer. Flow: search_products → confirm the " +
-        "item, size/variant and quantity → prepare_checkout → give them the pay link. Call get_my_profile first and only " +
+        "Shop on Shopify stores that deliver in India for the signed-in customer. Flow: search_products → if the product " +
+        "has options (customer_must_choose, e.g. Size, Color), ask the customer to pick each one and the quantity, in one " +
+        "question, listing the choices → get_product_details with their picks for the exact variant_id → prepare_checkout " +
+        "→ give them the pay link. Never pick a size, colour or other option for the customer. Call get_my_profile first and only " +
         "ask for what it lacks: never ask for a phone it already has. With no saved address, a Shop-signed-in customer's " +
         "checkout uses the address in their Shop account (shown in the checkout messages); tell them where it will ship " +
         "and ask for an address only if there is none or they want another. " +
@@ -137,7 +158,39 @@ export function buildConnectorServer(customerId: string) {
           return min == null || min <= a.max_price_inr!;
         });
       }
+      const c = choicesFor(customerId);
+      for (const p of r.products ?? []) {
+        if (!p.customer_must_choose?.length) continue;
+        for (const v of p.variants ?? []) if (!c.chosen.has(v.variant_id)) c.needs.set(v.variant_id, { title: p.title, options: p.customer_must_choose });
+      }
       return r;
+    }),
+  );
+
+  server.registerTool(
+    "get_product_details",
+    {
+      title: "Product options and exact variant",
+      description:
+        "All options of a product (sizes, colours, packs) with what's in stock, and, once the customer has chosen every " +
+        "option, the exact variant_id and price to use with prepare_checkout. Pass the customer's choices in selected, " +
+        "e.g. {\"Size\": \"9\", \"Color\": \"Raw Titanium\"}. Use the product_id from search_products.",
+      inputSchema: {
+        product_id: z.string(),
+        store: z.string().optional().describe("Store domain from search_products"),
+        selected: z.record(z.string(), z.string()).optional().describe("Option name → the customer's choice"),
+        pincode: z.string().optional(),
+      },
+      annotations: READ,
+    },
+    guard(async (a) => {
+      const d = await getProductDetails({ ...a, buyer_ip: (db.prepare("SELECT last_ip FROM customers WHERE id = ?").get(customerId) as any)?.last_ip ?? undefined });
+      const c = choicesFor(customerId);
+      if (d.variant && !d.still_to_choose && !d.problems) {
+        c.chosen.add(d.variant.variant_id);
+        c.needs.delete(d.variant.variant_id);
+      }
+      return d;
     }),
   );
 
@@ -147,7 +200,8 @@ export function buildConnectorServer(customerId: string) {
       title: "Prepare checkout and pay link",
       description:
         "Build a checkout on the store and return pay_url: the customer opens it and pays on the store's own page " +
-        "(card, UPI, etc.). This never pays or places the order. Confirm item, quantity, store and address first. " +
+        "(card, UPI, etc.). This never pays or places the order. For products with options, the variant_id must come " +
+        "from get_product_details with the customer's own choices. Confirm item, quantity, store and address first. " +
         "Show the total and the pay_url as a link.",
       inputSchema: {
         store: z.string(),
@@ -157,7 +211,20 @@ export function buildConnectorServer(customerId: string) {
         discount_codes: z.array(z.string()).optional(),
       },
     },
-    guard((a) => prepareCheckout({ ...a, customer_id: customerId, buyer_ip: buyerIp(), partner: "claude" })),
+    guard((a) => {
+      const c = choicesFor(customerId);
+      for (const it of a.items) {
+        const need = c.needs.get(it.variant_id);
+        if (need && !c.chosen.has(it.variant_id)) {
+          throw new CheckoutRejected(
+            `"${need.title}" comes in different ${need.options.join(" / ")} options and the customer hasn't chosen yet. ` +
+              `Ask them which ${need.options.join(" and ")} they want (and how many), then call get_product_details with ` +
+              `their choices and use the variant_id it returns.`,
+          );
+        }
+      }
+      return prepareCheckout({ ...a, customer_id: customerId, buyer_ip: buyerIp(), partner: "claude" });
+    }),
   );
 
   server.registerTool(

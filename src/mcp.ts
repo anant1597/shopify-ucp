@@ -4,7 +4,7 @@
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { searchProducts } from "./services/catalog.ts";
+import { getProductDetails, searchProducts } from "./services/catalog.ts";
 import {
   CheckoutRejected,
   getCheckoutOptions,
@@ -40,7 +40,8 @@ export function buildMcpServer(partner: string) {
     {
       description:
         "Search products across Shopify stores that ship to India (or within one store). Prices are in INR. " +
-        "Use the returned variant_id and store with prepare_checkout.",
+        "Products with customer_must_choose (Size, Color…) show only an example variant: ask the customer, then use " +
+        "get_product_details for the exact variant_id. Otherwise use the returned variant_id and store with prepare_checkout.",
       inputSchema: {
         query: z.string(),
         store: z.string().optional().describe("Storefront domain to search within, e.g. www.boat-lifestyle.com"),
@@ -53,6 +54,24 @@ export function buildMcpServer(partner: string) {
       },
     },
     guard((a) => searchProducts(a)),
+  );
+
+  server.registerTool(
+    "get_product_details",
+    {
+      description:
+        "All options of a product (sizes, colours, packs) with stock, and, once every option is chosen, the exact " +
+        "variant_id and price for prepare_checkout. selected maps option name to the customer's choice, e.g. " +
+        "{\"Size\": \"9\", \"Color\": \"Raw Titanium\"}.",
+      inputSchema: {
+        product_id: z.string(),
+        store: z.string().optional(),
+        selected: z.record(z.string(), z.string()).optional(),
+        pincode: z.string().optional(),
+        buyer_ip: z.string().optional(),
+      },
+    },
+    guard((a) => getProductDetails(a)),
   );
 
   server.registerTool(

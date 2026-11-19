@@ -35,9 +35,14 @@ How to work:
 - At the start of a shopping task, call get_my_profile once to know their name, phone and saved addresses.
 - Search with search_products. The website shows the results as product cards with image, price and store, so \
 in your text give a short take (one or two picks and why) and don't list the other results: the cards show them.
-- Before prepare_checkout, make sure the product, variant (size/colour/pack) and quantity are clear. If the \
-customer has already said them (for example "I'll take the Kyoto one, 1 please"), go straight to prepare_checkout \
-without asking again: it only builds a checkout, nothing is charged. Confirm only what is ambiguous.
+- Search results show only one example variant. If a product has customer_must_choose (for example Size and \
+Color), never pick for the customer: ask them to choose each option and the quantity in one short question, \
+listing the choices (sizes as a range like 5–14 if long). The product cards also let them pick options and \
+quantity. Then call get_product_details with product_id, store and their choices in selected, and use the \
+variant_id it returns. If it reports problems or still_to_choose, ask about just that.
+- Ask the quantity if they haven't said it (in the same question as the options). Once product, every option and \
+quantity are clear, go straight to prepare_checkout without asking again: it only builds a checkout, nothing is \
+charged.
 - Only ask for details the profile doesn't have. If it has a phone, never ask for one. If there's a saved address, \
 confirm which one to use. If there's none but they're signed in with Shop, don't ask up front: call \
 prepare_checkout without address_id, because the store fills in the address saved in their Shop account, and \
@@ -106,8 +111,10 @@ function cardProducts(data: any) {
   return (data?.products ?? []).slice(0, 10).map((p: any) => {
     const v = (p.variants ?? []).find((x: any) => x.available !== false) ?? p.variants?.[0];
     return {
-      title: p.title, store: p.store ?? v?.store, image: p.image, url: p.url,
-      price_inr: v?.price?.inr ?? p.price_range?.min?.inr, variants: (p.variants ?? []).length,
+      product_id: p.product_id, title: p.title, store: p.store ?? v?.store, image: p.image, url: p.url,
+      price_inr: p.price_range?.min?.inr ?? v?.price?.inr,
+      price_varies: p.price_range?.max?.inr != null && p.price_range.max.inr !== p.price_range?.min?.inr,
+      options: (p.options ?? []).filter((o: any) => o.values?.length > 1).slice(0, 4),
     };
   });
 }

@@ -8,7 +8,8 @@ pays on the store's own checkout page.
 
 ```
 partner / our agent ──MCP (x-api-key)──▶  /mcp
-   search_products ─────────────▶ Global Catalog  (ships_to IN, ships_from IN)
+   search_products ─────────────▶ Global Catalog  (ships_to IN, ships_from IN); options (Size, Color…) per product
+   get_product_details ─────────▶ get_product + customer's choices → exact variant_id, price, stock
    upsert_customer / add_address  (our DB)
    get_shop_sign_in ────────────▶ "Sign in with Shop" link or device code (one time)
    prepare_checkout ────────────▶ store /.well-known/ucp → store /api/ucp/mcp create_checkout
@@ -63,7 +64,7 @@ Claude ── code + PKCE ───▶ /oauth/token → access (1h) + rotating r
 Claude ── Bearer ────────▶ /connector/mcp  (tools bound to that customer)
 ```
 
-- Tools: `get_my_profile`, `update_my_details`, `add_address`, `search_products`, `prepare_checkout`,
+- Tools: `get_my_profile`, `update_my_details`, `add_address`, `search_products`, `get_product_details`, `prepare_checkout`,
   `get_checkout_options`, `update_checkout`, `get_checkout_status`, `cancel_checkout`, `get_order`,
   `connect_order_tracking`, `list_my_orders`, `get_my_order`, `get_cancellation_options`, `ask_store`.
   None take a customer id: the customer is whoever signed in.
@@ -76,6 +77,18 @@ Claude ── Bearer ────────▶ /connector/mcp  (tools bound to
   Shopify enables it for our client the two approvals become one.
 - `PUBLIC_BASE_URL` must be stable: Claude stores the connector URL, and the Shop redirect URL
   (`/auth/shop/callback`) registered in Dev Dashboard must match it.
+
+## Sizes, colours and quantity
+
+Catalog search returns a product's options (e.g. Size 5–14, Color ×9) but only **one example variant**. Checking
+that out would silently pick a size and colour for the customer. So:
+
+- search results mark such products with `customer_must_choose` and a note that the variant is an example
+- `get_product_details` maps the customer's words ("9", "titanium") to the store's exact labels and returns the
+  matching `variant_id`, price and stock, or `still_to_choose` / `problems` (with the valid values)
+- in the connector and website, `prepare_checkout` **refuses** a search example variant until the customer's choice
+  has been resolved through `get_product_details` (tracked in memory per customer)
+- the website's product cards have a picker (each option + quantity) that sends the choice to the chat
 
 ## After payment: orders, cancellation, store questions
 
