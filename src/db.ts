@@ -179,6 +179,9 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 for (const sql of [
   "ALTER TABLE checkouts ADD COLUMN max_total_minor INTEGER",
   "ALTER TABLE customers ADD COLUMN last_ip TEXT", // last IP seen from the customer's own browser
+  "ALTER TABLE addresses ADD COLUMN source TEXT", // null: entered by the customer; 'shop': from their Shop account
+  "ALTER TABLE addresses ADD COLUMN shop_address_id TEXT",
+  "ALTER TABLE checkouts ADD COLUMN summary_json TEXT", // items + delivery address, for the orders list
 ]) {
   try {
     db.exec(sql);

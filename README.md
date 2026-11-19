@@ -64,7 +64,7 @@ Claude ── code + PKCE ───▶ /oauth/token → access (1h) + rotating r
 Claude ── Bearer ────────▶ /connector/mcp  (tools bound to that customer)
 ```
 
-- Tools: `get_my_profile`, `update_my_details`, `add_address`, `search_products`, `get_product_details`, `prepare_checkout`, `confirm_checkout`,
+- Tools: `get_my_profile`, `update_my_details`, `add_address`, `search_products`, `get_product_details`, `get_delivery_addresses`, `prepare_checkout`, `confirm_checkout`, `list_orders_placed`,
   `get_checkout_options`, `update_checkout`, `get_checkout_status`, `cancel_checkout`, `get_order`,
   `connect_order_tracking`, `list_my_orders`, `get_my_order`, `get_cancellation_options`, `ask_store`.
   None take a customer id: the customer is whoever signed in.
@@ -83,7 +83,11 @@ Claude ── Bearer ────────▶ /connector/mcp  (tools bound to
 Customer-facing checkouts go through every check before a pay link exists:
 
 1. **Product, options, quantity**: options resolved with `get_product_details` (below).
-2. **Delivery address**: `prepare_checkout` refuses without `address_id` (a saved address the customer picked) or
+2. **Delivery address**: `get_delivery_addresses` returns a pick list: addresses saved here plus the ones in the
+   customer's Shop account (`get_account` on Shop MCP, synced into `addresses` with `source = 'shop'` at most every
+   10 minutes; a Shop address the store prefills on a checkout is saved too). The website shows it as a picker card
+   with "Enter a new address" (form → `POST /api/addresses`); the picked `address_id` reaches the assistant with the
+   message. A missing name/email on the customer is filled from Shop. `prepare_checkout` refuses without `address_id` (a saved address the customer picked) or
    `use_shop_address` (the address in their Shop account). No silent default address.
 3. **Review**: `prepare_checkout` builds the checkout on the store, waits for its shipping plan and returns
    `delivery` (`deliverable` true/false/null, address, pincode, delivery option and cost, or the store's reason),
@@ -91,11 +95,18 @@ Customer-facing checkouts go through every check before a pay link exists:
    address/pincode counts as not deliverable even when it still lists a shipping option (stores do this, e.g.
    `delivery_invalid_postal_code_for_country`).
 4. **Confirm**: `confirm_checkout`, only after the customer says yes, re-reads the checkout, refuses unless
-   delivery is confirmed, and turns the pay link on (`checkouts.confirmed_at`). `/pay/…` answers 410 until then.
+   delivery is confirmed, fills in what the store's checkout is missing (buyer email/phone/name, delivery name and
+   phone from the saved address or profile, keeping the shipping choice), and turns the pay link on (`checkouts.confirmed_at`). `/pay/…` answers 410 until then.
    On the website, a confirm in the same turn as the review is refused, so the customer always sees the review
    card ("Check your order": items, deliver to, ✓/✗ delivery, total, Confirm order) and answers first.
 
 The partner API (`/mcp`) is unchanged: its `prepare_checkout` still returns a live pay link.
+
+**Orders tab (website)**: `GET /api/orders` lists confirmed checkouts newest first (items and address from
+`checkouts.summary_json`): Paid with order number and "View order", Awaiting payment with "Pay now", expired. Unpaid
+cancelled ones are hidden. It answers from the DB first (`?refresh=0`) and then re-checks open ones with the store.
+After a pay card appears, the page polls `GET /api/orders/:checkout_id` every 10 s (visible tab, up to 30 min) and
+shows "✓ Order placed #…" when the store reports the payment. The connector has the same list as `list_orders_placed`.
 
 ## Sizes, colours and quantity
 
@@ -214,6 +225,7 @@ public/web/index.html      chat website (product + payment cards)
 src/services/checkout.ts   prepare → pay link, status, permalink fallback
 src/services/catalog.ts    Global Catalog / per-store search
 src/services/customers.ts  customers, addresses, phone normalisation
+src/services/addresses.ts  delivery address pick list, Shop account address sync
 src/auth/agentToken.ts     client-credentials agent token
 src/auth/shopIdentity.ts   Sign in with Shop, refresh, per-store buyer tokens
 src/ucp/mcpClient.ts       JSON-RPC client (meta, buyer IP, 429 backoff, error unwrapping)

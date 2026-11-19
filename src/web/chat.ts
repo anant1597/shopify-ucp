@@ -43,15 +43,18 @@ the quantity in one short question, listing the choices (sizes as a range like 5
 also let them pick options and quantity. Then call get_product_details with product_id, store and their choices in \
 selected, and use the variant_id it returns. If it reports problems or still_to_choose, ask about just that. Ask the \
 quantity if they haven't said it.
-2. Delivery address: ask where to deliver, in the same message as step 1's question when you can. Offer their \
-saved addresses from get_my_profile (one line each, with pincode), or, if they're signed in with Shop, "the address \
-in your Shop account" (use_shop_address), or a new address (line 1, city, state in full, 6-digit pincode; save it \
-with add_address). Only ask for details the profile doesn't have; if it has a phone, never ask for one.
+2. Delivery address: call get_delivery_addresses. The website shows the list as a picker card (their saved \
+addresses and the ones from their Shop account, plus "Enter a new address"), so just ask them to pick where to \
+deliver, in the same message as step 1's question when you can. Don't list the addresses in your text (the card \
+shows them) and don't ask them to type an address that's in the list. If the list is empty and shop_checkout_address_available, offer "the address in your Shop account" \
+(use_shop_address) or a new one. A picked address arrives as [Selected address_id: …]: use that address_id. Only \
+ask for details the profile doesn't have; if it has a phone, never ask for one.
 3. Review: once product, options, quantity and address are settled, call prepare_checkout. It builds the order on \
 the store and checks delivery to that pincode, but gives no pay link. The website shows it as a review card. If \
 delivery.deliverable is false, tell them the store doesn't deliver there and ask for another address or offer \
 another store. Otherwise sum it up in one or two lines (item with options and quantity, delivery address and \
-option, total) and ask them to confirm. Mention anything the store flagged.
+option, total) and ask them to confirm. Their name, phone and email (shown on the card) are filled in on the \
+store's page when they confirm. Mention anything the store flagged.
 4. Pay link: only after the customer says yes in a new message, call confirm_checkout. The website then shows a \
 payment card with a Pay button, so just say they can pay by card or UPI on the store's page with the Pay button. \
 Don't paste the pay link. If they want changes, use update_checkout and show the summary again.
@@ -75,6 +78,7 @@ export type ChatEvent =
   | { type: "products"; products: any[] }
   | { type: "checkout"; checkout: any }
   | { type: "review"; review: any }
+  | { type: "addresses"; addresses: any }
   | { type: "error"; message: string }
   | { type: "done"; conversation_id: string };
 
@@ -83,7 +87,8 @@ type DisplayItem =
   | { role: "assistant"; text: string }
   | { role: "products"; products: any[] }
   | { role: "checkout"; checkout: any }
-  | { role: "review"; review: any };
+  | { role: "review"; review: any }
+  | { role: "addresses"; addresses: any };
 
 const busy = new Set<string>();
 
@@ -141,6 +146,7 @@ function cardReview(data: any) {
   return {
     checkout_id: data.checkout_id, store: data.store, items: data.items, total: data.total, breakdown: data.breakdown,
     delivery: { deliverable: d.deliverable ?? null, address: d.address ?? data.delivery_address ?? null, pincode: d.pincode ?? null, shipping: d.shipping, reason: d.reason },
+    contact: data.contact ?? null,
     ready: data.ready_to_confirm ?? d.deliverable === true,
   };
 }
@@ -166,6 +172,7 @@ export async function runChat(
   conversationId: string | null,
   userText: string,
   emit: (e: ChatEvent) => void,
+  context: { address_id?: string } = {},
 ) {
   let row = conversationId
     ? (db.prepare("SELECT * FROM web_conversations WHERE id = ? AND customer_id = ?").get(conversationId, customerId) as any)
@@ -188,7 +195,11 @@ export async function runChat(
 
   const messages: Anthropic.Beta.BetaMessageParam[] = JSON.parse(row.messages_json);
   const display: DisplayItem[] = JSON.parse(row.display_json);
-  messages.push({ role: "user", content: userText });
+  // A pick from the address card: tell the assistant which saved address (shown to the customer as plain text).
+  const picked = context.address_id
+    ? (db.prepare("SELECT id FROM addresses WHERE id = ? AND customer_id = ?").get(context.address_id, customerId) as any)?.id
+    : null;
+  messages.push({ role: "user", content: picked ? `${userText}\n\n[Selected address_id: ${picked}]` : userText });
   display.push({ role: "user", text: userText });
 
   const save = () => {
@@ -287,6 +298,11 @@ export async function runChat(
                 display.push({ role: "products", products });
                 emit({ type: "products", products });
               }
+            }
+            if (t.name === "get_delivery_addresses" && data) {
+              const addresses = { list: data.addresses ?? [], shop_option: !!data.shop_checkout_address_available };
+              display.push({ role: "addresses", addresses });
+              emit({ type: "addresses", addresses });
             }
             if (t.name === "prepare_checkout" || t.name === "update_checkout" || t.name === "confirm_checkout") {
               const merged = { store: (t.input as any)?.store, ...data };

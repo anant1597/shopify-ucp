@@ -6,11 +6,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { db } from "../db.ts";
 import { getProductDetails, searchProducts } from "../services/catalog.ts";
-import { CheckoutRejected, confirmCheckout, getCheckoutOptions, getCheckoutStatus, prepareCheckout, updateCheckout } from "../services/checkout.ts";
+import { CheckoutRejected, confirmCheckout, listCustomerOrders, getCheckoutOptions, getCheckoutStatus, prepareCheckout, updateCheckout } from "../services/checkout.ts";
 import { askStore, cancelUnpaidCheckout, getCancellationOptions, getOrder } from "../services/orders.ts";
 import { getShopOrder, isShopOrdersConnected, listShopOrders, startShopOrdersSignIn } from "../services/shopMcp.ts";
 import { addAddress, getCustomer, upsertCustomer } from "../services/customers.ts";
 import { isShopLinked } from "../auth/shopIdentity.ts";
+import { listDeliveryAddresses } from "../services/addresses.ts";
 
 const ok = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
 const fail = (msg: string) => ({ content: [{ type: "text" as const, text: msg }], isError: true });
@@ -45,13 +46,16 @@ export function buildConnectorServer(customerId: string) {
         "customer before giving a pay link: 1) search_products; 2) if the product has options (customer_must_choose, " +
         "e.g. Size, Color), ask the customer to pick each one and the quantity in one question, listing the choices, " +
         "then get_product_details with their picks for the exact variant_id (never pick an option for them); " +
-        "3) ask where to deliver: call get_my_profile first and offer their saved addresses, or the address in their " +
-        "Shop account (use_shop_address), or take a new one (add_address: line 1, city, state, 6-digit pincode); never " +
-        "ask for a phone the profile already has; 4) prepare_checkout builds the order on the store and returns a " +
+        "3) ask where to deliver: call get_delivery_addresses and let the customer pick from the list (their saved " +
+        "addresses and the ones from their Shop account, numbered, one line each with pincode); only if none suits them, " +
+        "take a new one (add_address: line 1, city, state, 6-digit pincode). If the list is empty but " +
+        "shop_checkout_address_available, offer the address in their Shop account (use_shop_address). Never ask them " +
+        "to type an address that's already in the list, and never ask for a phone the profile already has; " +
+        "4) prepare_checkout builds the order on the store and returns a " +
         "review with no pay link: it checks the store delivers to that pincode and gives the delivery option and total; " +
         "if it doesn't deliver, say so and ask for another address; 5) show the review (item, options, quantity, " +
-        "address, delivery, total) and ask the customer to confirm; 6) only after they say yes, confirm_checkout returns " +
-        "the pay link. " +
+        "address, delivery, contact details, total) and ask the customer to confirm; 6) only after they say yes, confirm_checkout returns " +
+        "the pay link, and the store's page opens with their name, phone, email and address filled in. " +
         "Nothing is ever bought or paid by these tools: the customer pays on the store's own checkout page. " +
         "Prefer stores whose prices are in INR. Show prices in ₹.",
     },
@@ -74,8 +78,8 @@ export function buildConnectorServer(customerId: string) {
     };
 
   const addresses = () =>
-    (db.prepare("SELECT id, line1, line2, city, state, pincode, is_default FROM addresses WHERE customer_id = ? ORDER BY is_default DESC, rowid DESC")
-      .all(customerId) as any[]).map((a) => ({ ...a, is_default: !!a.is_default }));
+    (db.prepare("SELECT id, line1, line2, city, state, pincode, is_default, source FROM addresses WHERE customer_id = ? ORDER BY is_default DESC, rowid DESC")
+      .all(customerId) as any[]).map(({ source, ...a }) => ({ ...a, is_default: !!a.is_default, from_shop: source === "shop" }));
 
   server.registerTool(
     "get_my_profile",
@@ -95,6 +99,33 @@ export function buildConnectorServer(customerId: string) {
         addresses: addresses(),
       };
     }),
+  );
+
+  server.registerTool(
+    "get_delivery_addresses",
+    {
+      title: "Delivery addresses to choose from",
+      description:
+        "The customer's delivery addresses to offer as a pick list: ones saved here plus the ones in their Shop " +
+        "account (from_shop). Show them numbered, one line each with the pincode, and let the customer pick; offer " +
+        "'a new address' as the last choice. Use the chosen address_id with prepare_checkout.",
+      inputSchema: {},
+      annotations: READ,
+    },
+    guard(() => listDeliveryAddresses(customerId)),
+  );
+
+  server.registerTool(
+    "list_orders_placed",
+    {
+      title: "Orders placed here",
+      description:
+        "Orders the customer confirmed through this service, newest first: paid (with order number), awaiting " +
+        "payment (with pay link), expired or cancelled. Re-checks unpaid ones with the store.",
+      inputSchema: {},
+      annotations: READ,
+    },
+    guard(() => listCustomerOrders(customerId)),
   );
 
   server.registerTool(

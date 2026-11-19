@@ -122,7 +122,49 @@
   .send { flex: none; width: 46px; height: 46px; border-radius: 50%; border: 0; background: var(--brand); color: #fff; display: grid; place-items: center; }
   .send:disabled { opacity: .45; cursor: default; }
   .hidden { display: none !important; }
-  @media (max-width: 480px) { .msg { max-width: 94%; } .who { display: none; } header { gap: 8px; } .ghost { padding: 6px 10px; font-size: 13px; } }
+
+  /* Tabs */
+  .tabs { display: inline-flex; background: var(--surface-2); border-radius: 999px; padding: 3px; gap: 2px; }
+  .tabs button { border: 0; background: none; border-radius: 999px; padding: 5px 12px; font-size: 14px; font-weight: 600; color: var(--muted); position: relative; }
+  .tabs button[aria-selected="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+  .tabs .badge { position: absolute; top: 2px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--brand); }
+
+  /* Address picker */
+  .addr { align-self: stretch; max-width: 440px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 8px; }
+  .addr h3 { margin: 0 0 2px; font-size: 15px; }
+  .addr .opt { text-align: left; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; font-size: 14px; }
+  .addr .opt:hover:not(:disabled) { border-color: var(--brand); }
+  .addr .opt:disabled { opacity: .55; cursor: default; }
+  .addr .opt.picked { border-color: var(--brand); opacity: 1; }
+  .addr .opt small { color: var(--muted); font-size: 12px; }
+  .tag { display: inline-block; font-size: 11px; font-weight: 600; color: var(--brand); background: var(--brand-soft); border-radius: 999px; padding: 1px 7px; margin-left: 6px; vertical-align: 1px; }
+  .addr .new { background: none; border: 1px dashed var(--line); border-radius: 12px; padding: 10px; font-size: 14px; font-weight: 600; color: var(--brand); }
+  .addr form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .addr form .full { grid-column: 1 / -1; }
+  .addr input, .addr select { font: inherit; font-size: 14px; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; width: 100%; min-width: 0; }
+  .addr form button { grid-column: 1 / -1; background: var(--brand); color: #fff; border: 0; border-radius: 12px; padding: 11px; font-weight: 650; }
+  .addr .err { grid-column: 1 / -1; color: var(--warn); font-size: 13px; margin: 0; }
+
+  .placed { align-self: stretch; max-width: 440px; border: 1px solid var(--ok); background: var(--surface); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 4px; }
+  .placed b { color: var(--ok); }
+
+  /* Orders tab */
+  .orders { flex: 1; overflow-y: auto; padding: 18px 16px; display: flex; flex-direction: column; gap: 12px; }
+  .orders h2 { margin: 0; font-size: 20px; }
+  .order { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 6px; box-shadow: var(--shadow); }
+  .order .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .order .store { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .order .meta { font-size: 13px; color: var(--muted); }
+  .order ul { margin: 0; padding-left: 18px; font-size: 14px; }
+  .order .bottom { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .order .amt { font-weight: 700; }
+  .pill { font-size: 12px; font-weight: 650; border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
+  .pill.paid { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+  .pill.awaiting_payment { background: var(--brand-soft); color: var(--brand); }
+  .pill.expired, .pill.canceled, .pill.over_cap { background: var(--surface-2); color: var(--muted); }
+  .order a.btn { text-decoration: none; background: var(--brand); color: #fff; border-radius: 10px; padding: 7px 12px; font-size: 14px; font-weight: 650; }
+  .order a.link { font-size: 14px; font-weight: 600; text-decoration: none; }
+  @media (max-width: 480px) { .msg { max-width: 94%; } .who { display: none; } .brand { display: none; } header { gap: 8px; } .ghost { padding: 6px 10px; font-size: 13px; } }
 </style>
 </head>
 <body>
@@ -132,6 +174,10 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7h12l-1 12H7L6 7Z"/><path d="M9 7a3 3 0 0 1 6 0"/></svg>
     </div>
     <div class="brand">Shop by Chat</div>
+    <div class="tabs hidden" id="tabs" role="tablist">
+      <button type="button" role="tab" id="tabChat" aria-selected="true">Chat</button>
+      <button type="button" role="tab" id="tabOrders" aria-selected="false">Orders<span class="badge hidden" id="ordersBadge"></span></button>
+    </div>
     <div class="spacer"></div>
     <span class="who hidden" id="who"></span>
     <button class="ghost hidden" id="newChat" type="button">New chat</button>
@@ -169,6 +215,7 @@
       </div>
     </div>
   </main>
+  <main class="orders hidden" id="orders" aria-live="polite"></main>
   <form class="composer hidden" id="composer">
     <textarea id="input" rows="1" placeholder="What do you want to buy?" aria-label="Message"></textarea>
     <button class="send" id="send" type="submit" aria-label="Send">
@@ -291,6 +338,7 @@
       <div class="head"><h3>Check your order</h3><span class="store">${esc(r.store || "")}</span></div>
       ${(r.items || []).length ? `<ul>${r.items.map((i) => `<li>${esc(i.title || "Item")} × ${esc(String(i.quantity))}${i.unit_price_inr != null ? " · " + inr(i.unit_price_inr) : ""}</li>`).join("")}</ul>` : ""}
       <div class="row"><b>Deliver to</b><span>${esc(dl.address || "Not set yet")}</span>${deliveryLine}</div>
+      ${r.contact && (r.contact.name || r.contact.phone || r.contact.email) ? `<div class="row"><b>Contact (filled in for you)</b><span>${[r.contact.name, r.contact.phone, r.contact.email].filter(Boolean).map(esc).join(" · ")}</span></div>` : ""}
       ${lines.length ? `<dl>${lines.map((b) => `<dt>${esc(label(b.type))}</dt><dd>${inr(b.inr)}</dd>`).join("")}</dl>` : ""}
       <div class="total">${total != null ? inr(total) : "Total on the store's page"}</div>
       ${r.ready ? `<div class="acts"><button type="button" class="yes">Confirm order</button><button type="button" class="chg">Change something</button></div>
@@ -315,11 +363,136 @@
       ${pay ? `<a class="pay" href="${esc(pay)}" target="_blank" rel="noopener noreferrer">Pay${total != null ? " " + inr(total) : ""} on the store's page</a>` : ""}
       <p class="note">Card, UPI and other options on the store's own checkout. Your bank's OTP happens there.</p>`;
     chat.append(d); scroll();
+    if (k.checkout_id && pay) watchPayment(k.checkout_id, d);
   }
+
+  // After the pay card, check every 10 s (while the page is visible, up to 30 min) whether the customer paid.
+  const watching = new Set();
+  function watchPayment(id, after) {
+    if (watching.has(id)) return;
+    watching.add(id);
+    const until = Date.now() + 30 * 60 * 1000;
+    const tick = async () => {
+      if (Date.now() > until) return watching.delete(id);
+      if (document.visibilityState === "visible") {
+        try {
+          const r = await fetch(`/api/orders/${encodeURIComponent(id)}`);
+          if (r.status === 401) return;
+          if (r.ok) {
+            const o = await r.json();
+            if (o.state === "paid") { showPlaced(o, after); watching.delete(id); return; }
+            if (o.state !== "awaiting_payment") { watching.delete(id); return; }
+          }
+        } catch {}
+      }
+      setTimeout(tick, 10000);
+    };
+    setTimeout(tick, 4000);
+  }
+  function showPlaced(o, after) {
+    if (chat.querySelector(`[data-placed="${CSS.escape(o.checkout_id)}"]`)) return;
+    const d = document.createElement("div"); d.className = "placed"; d.dataset.placed = o.checkout_id;
+    const link = o.order_url && safeUrl(o.order_url);
+    d.innerHTML = `<b>✓ Order placed${o.order_number ? " · " + esc(o.order_number) : ""}</b>
+      <span>${esc(o.store)}${o.total ? " · " + inr(o.total.inr) : ""}</span>
+      <span class="note">You'll find it in the Orders tab.${link ? ` <a href="${esc(link)}" target="_blank" rel="noopener noreferrer">View on the store</a>` : ""}</span>`;
+    (after?.isConnected ? after.after(d) : chat.append(d)); scroll();
+    if ($("orders").classList.contains("hidden")) $("ordersBadge").classList.remove("hidden");
+  }
+
+  // Delivery address picker: saved + Shop addresses, or a new one through the form.
+  const STATES = ["Andaman and Nicobar Islands","Andhra Pradesh","Arunachal Pradesh","Assam","Bihar","Chandigarh","Chhattisgarh","Dadra and Nagar Haveli and Daman and Diu","Delhi","Goa","Gujarat","Haryana","Himachal Pradesh","Jammu and Kashmir","Jharkhand","Karnataka","Kerala","Ladakh","Lakshadweep","Madhya Pradesh","Maharashtra","Manipur","Meghalaya","Mizoram","Nagaland","Odisha","Puducherry","Punjab","Rajasthan","Sikkim","Tamil Nadu","Telangana","Tripura","Uttar Pradesh","Uttarakhand","West Bengal"];
+  function addAddresses(a) {
+    hideEmpty();
+    const d = document.createElement("div"); d.className = "addr";
+    const list = a.list || [];
+    d.innerHTML = `<h3>Where should we deliver?</h3>
+      ${list.map((x, i) => `<button type="button" class="opt" data-i="${i}"><span>${esc(x.address)}${x.from_shop ? '<span class="tag">From Shop</span>' : ""}${x.is_default ? '<span class="tag">Default</span>' : ""}</span>${x.name ? `<small>${esc(x.name)}</small>` : ""}</button>`).join("")}
+      ${!list.length && a.shop_option ? `<button type="button" class="opt" data-shop="1"><span>The address in my Shop account</span><small>The store fills it in; you'll see it before confirming</small></button>` : ""}
+      <button type="button" class="new">+ Enter a new address</button>
+      <form class="hidden" novalidate>
+        <input class="full" name="name" placeholder="Full name" autocomplete="name">
+        <input class="full" name="line1" placeholder="House / flat, street" autocomplete="address-line1" required>
+        <input class="full" name="line2" placeholder="Area, landmark (optional)" autocomplete="address-line2">
+        <input name="city" placeholder="City" autocomplete="address-level2" required>
+        <input name="pincode" placeholder="Pincode" inputmode="numeric" maxlength="6" autocomplete="postal-code" required>
+        <select class="full" name="state" autocomplete="address-level1" required><option value="">State</option>${STATES.map((x) => `<option>${x}</option>`).join("")}</select>
+        <p class="err hidden"></p>
+        <button type="submit">Deliver here</button>
+      </form>`;
+    const lock = (picked) => { d.querySelectorAll(".opt, .new").forEach((b) => (b.disabled = true)); picked?.classList.add("picked"); d.querySelector("form").classList.add("hidden"); };
+    d.querySelectorAll(".opt[data-i]").forEach((b) => b.addEventListener("click", () => {
+      if (busy) return;
+      const x = list[+b.dataset.i]; lock(b);
+      submit(`Deliver to ${x.address}`, { address_id: x.address_id });
+    }));
+    d.querySelector(".opt[data-shop]")?.addEventListener("click", (ev) => { if (busy) return; lock(ev.currentTarget); submit("Use the address in my Shop account."); });
+    const form = d.querySelector("form");
+    d.querySelector(".new").addEventListener("click", () => { form.classList.toggle("hidden"); form.querySelector("[name=name]").focus(); scroll(); });
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      if (busy) return;
+      const err = form.querySelector(".err");
+      const body = Object.fromEntries(new FormData(form));
+      if (!body.line1 || !body.city || !body.state || !/^\d{6}$/.test(body.pincode)) {
+        err.textContent = "Fill in the street, city, state and a 6-digit pincode."; err.classList.remove("hidden"); return;
+      }
+      const r = await fetch("/api/addresses", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { err.textContent = j.error || "Couldn't save the address."; err.classList.remove("hidden"); return; }
+      lock(null);
+      submit(`Deliver to my new address: ${j.address}`, { address_id: j.address_id });
+    });
+    chat.append(d); scroll();
+  }
+
+  // Orders tab
+  const STATE_LABEL = { paid: "Paid", awaiting_payment: "Awaiting payment", expired: "Link expired", canceled: "Cancelled", over_cap: "Over price limit" };
+  function renderOrders(orders, checking) {
+    const box = $("orders");
+    box.innerHTML = `<h2>Your orders</h2>` + (checking ? `<div class="status"><span class="dot"></span>Checking payments with the stores…</div>` : "")
+      + (orders.length || checking ? "" : `<p class="fine">No orders yet. Orders you confirm in the chat show up here, and turn to Paid once you pay on the store's page.</p>`);
+    for (const o of orders) {
+      const d = document.createElement("div"); d.className = "order";
+      const pay = o.pay_url && safeUrl(o.pay_url), view = o.order_url && safeUrl(o.order_url);
+      const date = new Date(o.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+      d.innerHTML = `
+        <div class="top"><span class="store">${esc(o.store)}</span><span class="pill ${esc(o.state)}">${esc(STATE_LABEL[o.state] || o.state)}</span></div>
+        <div class="meta">${esc(date)}${o.order_number ? " · Order " + esc(o.order_number) : ""}</div>
+        ${o.items.length ? `<ul>${o.items.map((i) => `<li>${esc(i.title || "Item")} × ${esc(String(i.quantity))}</li>`).join("")}</ul>` : ""}
+        ${o.address ? `<div class="meta">Deliver to ${esc(o.address)}</div>` : ""}
+        <div class="bottom"><span class="amt">${o.total ? inr(o.total.inr) : ""}</span>
+          ${pay ? `<a class="btn" href="${esc(pay)}" target="_blank" rel="noopener noreferrer">Pay now</a>` : ""}
+          ${view ? `<a class="link" href="${esc(view)}" target="_blank" rel="noopener noreferrer">View order</a>` : ""}</div>`;
+      box.append(d);
+    }
+  }
+  let ordersLoad = 0;
+  async function loadOrders() {
+    const n = ++ordersLoad;
+    const get = async (refresh) => {
+      const r = await fetch(`/api/orders${refresh ? "" : "?refresh=0"}`);
+      if (r.status === 401) { showSignedOut(); throw new Error("signed out"); }
+      return (await r.json()).orders;
+    };
+    try {
+      renderOrders(await get(false), true); // saved state first, instantly
+      const fresh = await get(true);       // then re-checked with the stores
+      if (n === ordersLoad) renderOrders(fresh, false);
+    } catch { if (n === ordersLoad) $("orders").innerHTML = `<h2>Your orders</h2><p class="fine">Couldn't load your orders. Try again.</p>`; }
+  }
+  function showTab(which) {
+    const orders = which === "orders";
+    $("tabChat").setAttribute("aria-selected", String(!orders)); $("tabOrders").setAttribute("aria-selected", String(orders));
+    $("chat").classList.toggle("hidden", orders); $("composer").classList.toggle("hidden", orders); $("orders").classList.toggle("hidden", !orders);
+    if (orders) { $("ordersBadge").classList.add("hidden"); loadOrders(); } else input.focus();
+  }
+  $("tabChat").addEventListener("click", () => showTab("chat"));
+  $("tabOrders").addEventListener("click", () => showTab("orders"));
 
   const toolLabels = {
     get_my_profile: "Checking your details", search_products: "Searching stores", get_product_details: "Checking sizes and stock", prepare_checkout: "Checking delivery and total", confirm_checkout: "Getting your payment link",
-    get_checkout_options: "Checking delivery options", update_checkout: "Updating your order", get_checkout_status: "Checking payment",
+    get_checkout_options: "Checking delivery options", get_delivery_addresses: "Getting your addresses", list_orders_placed: "Looking up your orders", update_checkout: "Updating your order", get_checkout_status: "Checking payment",
     add_address: "Saving your address", update_my_details: "Saving your details", get_order: "Checking your order",
     list_my_orders: "Looking up your orders", get_my_order: "Checking your order", get_cancellation_options: "Checking the store's policy",
     ask_store: "Asking the store", cancel_checkout: "Cancelling the checkout", connect_order_tracking: "Setting up order tracking",
@@ -332,7 +505,7 @@
     chat.append(statusEl); scroll();
   }
 
-  async function submit(text) {
+  async function submit(text, extra = {}) {
     text = text.trim();
     if (!text || busy) return;
     busy = true; send.disabled = true; input.value = ""; autosize();
@@ -342,7 +515,7 @@
     try {
       const res = await fetch("/api/chat", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: text, conversation_id: conversationId }),
+        body: JSON.stringify({ message: text, conversation_id: conversationId, ...extra }),
       });
       if (res.status === 401) return showSignedOut();
       if (!res.ok || !res.body) throw new Error(`Request failed (${res.status})`);
@@ -366,6 +539,7 @@
             setStatus(e.status === "start" ? (toolLabels[e.name] || "Working") : "Thinking");
           } else if (e.type === "products") { current = null; statusEl?.remove(); addProducts(e.products); if (statusEl) chat.append(statusEl); }
           else if (e.type === "checkout") { current = null; statusEl?.remove(); addCheckout(e.checkout); if (statusEl) chat.append(statusEl); }
+          else if (e.type === "addresses") { current = null; statusEl?.remove(); addAddresses(e.addresses); if (statusEl) chat.append(statusEl); }
           else if (e.type === "review") { current = null; statusEl?.remove(); addReview(e.review); if (statusEl) chat.append(statusEl); }
           else if (e.type === "error") { setStatus(null); addError(e.message); }
           else if (e.type === "done") { conversationId = e.conversation_id; store.set("conversation_id", conversationId); }
@@ -386,6 +560,7 @@
 
   $("newChat").addEventListener("click", () => {
     if (busy) return;
+    showTab("chat");
     conversationId = null; store.set("conversation_id", null);
     chat.querySelectorAll(":scope > :not(#empty)").forEach((n) => n.remove());
     $("empty").classList.remove("hidden"); input.focus();
@@ -396,14 +571,14 @@
   });
 
   function showSignedOut() {
-    for (const id of ["chat", "composer", "who", "newChat", "logout"]) $(id).classList.add("hidden");
+    for (const id of ["chat", "composer", "who", "newChat", "logout", "tabs", "orders"]) $(id).classList.add("hidden");
     $("landing").classList.remove("hidden");
     if (new URLSearchParams(location.search).get("signin") === "failed") $("signinFailed").classList.remove("hidden");
   }
 
   async function showSignedIn(me) {
     $("landing").classList.add("hidden");
-    for (const id of ["chat", "composer", "newChat", "logout"]) $(id).classList.remove("hidden");
+    for (const id of ["chat", "composer", "newChat", "logout", "tabs"]) $(id).classList.remove("hidden");
     if (me.name || me.email) { $("who").textContent = me.name || me.email; $("who").classList.remove("hidden"); }
     if (me.name) $("hello").textContent = `Hi ${me.name.split(" ")[0]}, what are you shopping for?`;
     if (location.search) history.replaceState(null, "", "/");
@@ -417,6 +592,7 @@
           else if (item.role === "products") addProducts(item.products);
           else if (item.role === "checkout") addCheckout(item.checkout);
           else if (item.role === "review") addReview(item.review);
+          else if (item.role === "addresses") addAddresses(item.addresses);
         }
       } else { conversationId = null; store.set("conversation_id", null); }
     }

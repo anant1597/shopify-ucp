@@ -150,6 +150,14 @@ async function callShop(customerId: string, name: string, args: Record<string, u
   throw new CheckoutRejected("Shop sign-in expired: call connect_shop_orders again.");
 }
 
+// ---------------------------------------------------------------- account
+
+/** The customer's Shop account: email and saved addresses (needs order tracking connected). */
+export async function getShopAccount(customerId: string): Promise<{ email?: string; addresses: any[]; preferred_address_id?: string }> {
+  const d = await callShop(customerId, "get_account", {});
+  return { email: d?.buyer?.email, addresses: d?.addresses ?? [], preferred_address_id: d?.preferred_address_id ?? undefined };
+}
+
 // ---------------------------------------------------------------- orders
 
 const minor = (totals: any[] | undefined) => (totals ?? []).find((t) => t.type === "total")?.amount;

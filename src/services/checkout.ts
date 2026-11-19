@@ -11,6 +11,7 @@ import { discoverStore } from "../ucp/discovery.ts";
 import { getAgentToken } from "../auth/agentToken.ts";
 import { getStoreBuyerToken } from "../auth/shopIdentity.ts";
 import { getAddress, getCustomer, getDefaultAddress, type Address, type Customer } from "./customers.ts";
+import { saveShopAddress } from "./addresses.ts";
 
 export interface PrepareCheckoutInput {
   customer_id: string;
@@ -63,6 +64,8 @@ export interface CheckoutReview {
   buyer_signed_in: boolean;
   items: { title?: string; variant_id?: string; quantity: number; unit_price_inr?: number }[];
   delivery: DeliveryCheck;
+  /** Filled in on the store's checkout once the customer confirms. */
+  contact: { name: string | null; email: string | null; phone: string | null };
   total?: { inr: number; currency: string; estimated: boolean };
   breakdown?: { type: string; inr: number }[];
   messages: { severity?: string; code?: string; text: string }[];
@@ -159,6 +162,13 @@ async function prepareViaUcp(
     throw new Error(`Store returned no continue_url (status ${co.status}). ${msgs}`);
   }
 
+  // The store prefilled the address from the customer's Shop account: keep it so it shows in their pick list.
+  if (input.require_confirmation && !address) {
+    const m = co.fulfillment?.methods?.[0];
+    const dest = m?.destinations?.find((d: any) => d.id === m.selected_destination_id) ?? m?.destinations?.[0];
+    if (dest) saveShopAddress(customer.id, { ...dest, id: undefined });
+  }
+
   // We deliberately never call complete_checkout.
   const saved = persist({
     input,
@@ -224,24 +234,127 @@ function reviewOf(row: any, co: any | null, base: { method: "ucp" | "permalink";
     : { deliverable: null, address: null, pincode: null, reason: "This store has no API checkout: delivery and the address are checked on its own page." };
   const describe = co ? describeCheckout(row, co) : null;
   const ready = base.method === "permalink" || delivery.deliverable === true;
+  const c = getCustomer(row.customer_id);
+  const items = describe?.items ?? [];
+  saveSummary(row.id, items, delivery.address);
   return {
     checkout_id: row.id,
     status: "awaiting_confirmation",
     store: row.store_domain,
     method: base.method,
     buyer_signed_in: base.buyer_signed_in,
-    items: describe?.items ?? [],
+    items,
     delivery,
+    contact: { name: [c?.first_name, c?.last_name].filter(Boolean).join(" ") || null, email: c?.email ?? null, phone: c?.phone ?? null },
     total: describe?.total ? { ...describe.total, estimated: false } : base.total,
     breakdown: describe?.breakdown ?? base.breakdown,
     messages: base.messages,
     ready_to_confirm: ready,
     next_step: ready
-      ? "Show the customer this summary (item, size/colour, quantity, delivery address, delivery option, total) and ask them to confirm. Only after they say yes, call confirm_checkout to get the pay link."
+      ? "Show the customer this summary (item, size/colour, quantity, delivery address, delivery option, contact details, total) and ask them to confirm. Only after they say yes, call confirm_checkout to get the pay link."
       : delivery.deliverable === false
         ? "The store won't deliver to this address (see delivery.reason). Tell the customer and ask for a corrected or different address (or offer another store); then update_checkout with the new address_id or prepare again."
         : "Fix what's missing (see delivery.reason) before asking the customer to confirm.",
   };
+}
+
+function saveSummary(checkoutId: string, items: any[], address: string | null | undefined) {
+  db.prepare("UPDATE checkouts SET summary_json = ? WHERE id = ?").run(
+    JSON.stringify({ items: items.map((i) => ({ title: i.title, quantity: i.quantity, unit_price_inr: i.unit_price_inr })), address: address ?? null }),
+    checkoutId,
+  );
+}
+
+/**
+ * Fill whatever the store's checkout is missing from our profile: buyer email/phone/name, and the delivery
+ * contact's name and phone (taken from the matching saved address first). Shipping choices are kept.
+ */
+async function fillKnownDetails(co: any, customer: Customer, call: (tool: string, args: Record<string, unknown>) => Promise<any>, ucpId: string) {
+  const m = co.fulfillment?.methods?.[0];
+  const dest = m?.destinations?.find((d: any) => d.id === m.selected_destination_id) ?? m?.destinations?.[0];
+  const saved = dest
+    ? (db.prepare("SELECT * FROM addresses WHERE customer_id = ? AND pincode = ?").all(customer.id, dest.postal_code ?? "") as any[])
+        .find((a) => (a.line1 ?? "").toLowerCase().replace(/\W/g, "") === (dest.street_address ?? "").toLowerCase().replace(/\W/g, "")) ?? null
+    : null;
+  const filledDest = dest
+    ? {
+        ...pickDest(dest),
+        first_name: dest.first_name ?? saved?.first_name ?? customer.first_name ?? undefined,
+        last_name: dest.last_name ?? saved?.last_name ?? customer.last_name ?? undefined,
+        phone_number: dest.phone_number ?? saved?.phone ?? customer.phone ?? undefined,
+      }
+    : undefined;
+  const b = co.buyer ?? {};
+  const buyerMissing =
+    (!b.email && customer.email) || (!b.phone_number && customer.phone) || (!b.first_name && customer.first_name);
+  const destMissing =
+    !!filledDest && (filledDest.first_name !== dest.first_name || filledDest.last_name !== dest.last_name || filledDest.phone_number !== dest.phone_number);
+  if (!buyerMissing && !destMissing) return co;
+  const selections = new Map<string, string>(
+    (co.fulfillment?.methods ?? []).flatMap((x: any) => (x.groups ?? []).map((g: any) => [g.id, g.selected_option_id])),
+  );
+  try {
+    let next = unwrap(await call("update_checkout", { id: ucpId, checkout: bodyFrom(co, customer, { ...(destMissing ? { destination: filledDest } : {}), selections }) }));
+    next = await refetchUntilShippingPlanned(call, ucpId, next);
+    const auto = autoSelectShipping(next, bodyFrom(next, customer), "fill_only");
+    if (auto) next = unwrap(await call("update_checkout", { id: ucpId, checkout: auto }));
+    return next;
+  } catch (e) {
+    console.warn("[checkout] couldn't fill details:", (e as Error).message);
+    return co;
+  }
+}
+
+/** Confirmed checkouts of a customer, newest first, with open ones re-checked against the store. */
+export async function listCustomerOrders(customerId: string, refresh = true) {
+  const rows = db.prepare(
+    "SELECT * FROM checkouts WHERE customer_id = ? AND confirmed_at IS NOT NULL ORDER BY created_at DESC LIMIT 30",
+  ).all(customerId) as any[];
+  if (refresh) {
+    const open = rows.filter((r) => isOpen(r) && r.created_at > now() - 7 * 86400_000).slice(0, 8);
+    await Promise.all(open.map((r) => getCheckoutStatus(r.id, customerId).catch(() => null)));
+  }
+  // Unpaid checkouts that were cancelled, or expired over 2 days ago, never became orders.
+  return rows
+    .map((r) => orderCard(r.id)!)
+    .filter((o) => o && o.state !== "canceled" && !(o.state === "expired" && Date.parse(o.created_at) < now() - 2 * 86400_000));
+}
+
+const isOpen = (r: any) =>
+  ["awaiting_payment", "needs_customer_input", "link_opened"].includes(r.status) && !(r.expires_at && r.expires_at < now());
+
+/** One order for the website's Orders tab (re-read from the DB). */
+export function orderCard(checkoutId: string) {
+  const r = db.prepare("SELECT * FROM checkouts WHERE id = ?").get(checkoutId) as any;
+  if (!r) return null;
+  const o = db.prepare("SELECT label FROM orders WHERE checkout_id = ? ORDER BY updated_at DESC LIMIT 1").get(r.id) as any;
+  const summary = r.summary_json ? JSON.parse(r.summary_json) : {};
+  const state =
+    r.status === "completed" ? "paid"
+    : r.status === "canceled" ? "canceled"
+    : r.expires_at && r.expires_at < now() ? "expired"
+    : r.status === "over_cap" ? "over_cap"
+    : "awaiting_payment";
+  return {
+    checkout_id: r.id as string,
+    store: r.store_domain as string,
+    state,
+    order_number: o?.label ?? null,
+    order_url: state === "paid" ? (r.order_url ?? null) : null,
+    total: r.total_minor != null ? { inr: r.total_minor / 100, currency: r.currency } : null,
+    items: summary.items ?? [],
+    address: summary.address ?? null,
+    created_at: new Date(r.created_at).toISOString(),
+    pay_url: state === "awaiting_payment" ? `${config.publicBaseUrl}/pay/${r.pay_token}` : null,
+  };
+}
+
+/** Re-check one checkout with the store (for the website's "has it been paid?" polling). */
+export async function refreshOrderCard(checkoutId: string, customerId: string) {
+  const r = db.prepare("SELECT customer_id, confirmed_at, status, expires_at FROM checkouts WHERE id = ?").get(checkoutId) as any;
+  if (!r || r.customer_id !== customerId || !r.confirmed_at) return null;
+  if (isOpen(r)) await getCheckoutStatus(checkoutId, customerId).catch(() => null);
+  return orderCard(checkoutId);
 }
 
 /**
@@ -254,13 +367,16 @@ export async function confirmCheckout(checkoutId: string, customerId: string) {
   if (["completed", "canceled"].includes(row.status)) throw new CheckoutRejected(`Checkout is already ${row.status}; prepare a new one.`);
   let review: ReturnType<typeof describeCheckout> | null = null;
   if (row.method === "ucp") {
-    const { co } = await openUcpCheckout(checkoutId, customerId);
+    const opened = await openUcpCheckout(checkoutId, customerId);
+    // Customer said yes: put every detail we have on the store's checkout so its page opens filled in.
+    const co = await fillKnownDetails(opened.co, getCustomer(customerId)!, opened.call, row.ucp_checkout_id);
     syncRow(row, co);
     const d = deliveryCheck(co);
     if (d.deliverable !== true) {
       throw new CheckoutRejected(`Can't confirm yet: ${d.reason ?? "delivery isn't confirmed for this address"}`);
     }
     review = describeCheckout(row, co);
+    saveSummary(row.id, review.items, review.delivery_address);
   }
   if (row.status === "over_cap") throw new CheckoutRejected("The total is above the price cap; change the order first.");
   if (!row.confirmed_at) db.prepare("UPDATE checkouts SET confirmed_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), row.id);

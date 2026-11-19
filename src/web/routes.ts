@@ -15,7 +15,9 @@ import { config } from "../config.ts";
 import { db, now } from "../db.ts";
 import { randomToken } from "../crypto.ts";
 import { buildShopSignInUrl, isShopLinked } from "../auth/shopIdentity.ts";
-import { getCustomer } from "../services/customers.ts";
+import { addAddress, getCustomer } from "../services/customers.ts";
+import { formatAddress } from "../services/addresses.ts";
+import { listCustomerOrders, refreshOrderCard } from "../services/checkout.ts";
 import { isShopOrdersConnected } from "../services/shopMcp.ts";
 import { rememberCustomerIp, settleCustomer } from "../connector/oauth.ts";
 import { getConversation, runChat, type ChatEvent } from "./chat.ts";
@@ -163,8 +165,50 @@ export async function handleWeb(req: IncomingMessage, res: ServerResponse, url: 
       "x-accel-buffering": "no",
     });
     const emit = (e: ChatEvent) => res.write(`data: ${JSON.stringify(e)}\n\n`);
-    await runChat(customerId, typeof body.conversation_id === "string" ? body.conversation_id : null, message, emit);
+    const context = typeof body.address_id === "string" ? { address_id: body.address_id } : {};
+    await runChat(customerId, typeof body.conversation_id === "string" ? body.conversation_id : null, message, emit, context);
     res.end();
+    return true;
+  }
+
+  // Orders placed through the website/connector (confirmed checkouts), open ones re-checked with the store.
+  if (req.method === "GET" && p === "/api/orders") {
+    json(res, 200, { orders: await listCustomerOrders(customerId, url.searchParams.get("refresh") !== "0") });
+    return true;
+  }
+  const one = p.match(/^\/api\/orders\/(chk_[\w-]+)$/);
+  if (req.method === "GET" && one) {
+    const order = await refreshOrderCard(one[1], customerId);
+    json(res, order ? 200 : 404, order ?? { error: "not_found" });
+    return true;
+  }
+
+  // New delivery address from the picker card's form.
+  if (req.method === "POST" && p === "/api/addresses") {
+    if (!(req.headers["content-type"] ?? "").includes("application/json")) {
+      json(res, 415, { error: "json_required" });
+      return true;
+    }
+    let b: any;
+    try {
+      b = await readJsonBody(req);
+    } catch (e) {
+      json(res, 400, { error: (e as Error).message });
+      return true;
+    }
+    const str = (v: unknown, max = 200) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+    const a = { line1: str(b.line1), line2: str(b.line2), city: str(b.city, 80), state: str(b.state, 60), pincode: str(b.pincode, 6), name: str(b.name, 120), phone: str(b.phone, 20) };
+    if (!a.line1 || !a.city || !a.state || !/^\d{6}$/.test(a.pincode)) {
+      json(res, 400, { error: "Fill in address line 1, city, state and a 6-digit pincode." });
+      return true;
+    }
+    const c = getCustomer(customerId)!;
+    const [first, ...rest] = a.name.split(/\s+/).filter(Boolean);
+    const saved = addAddress({
+      customer_id: customerId, line1: a.line1, line2: a.line2 || null, city: a.city, state: a.state, pincode: a.pincode,
+      first_name: first ?? c.first_name, last_name: rest.join(" ") || c.last_name, phone: a.phone || c.phone,
+    });
+    json(res, 200, { address_id: saved.id, address: formatAddress(saved) });
     return true;
   }
 
