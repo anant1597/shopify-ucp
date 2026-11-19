@@ -64,7 +64,7 @@ Claude ── code + PKCE ───▶ /oauth/token → access (1h) + rotating r
 Claude ── Bearer ────────▶ /connector/mcp  (tools bound to that customer)
 ```
 
-- Tools: `get_my_profile`, `update_my_details`, `add_address`, `search_products`, `get_product_details`, `prepare_checkout`,
+- Tools: `get_my_profile`, `update_my_details`, `add_address`, `search_products`, `get_product_details`, `prepare_checkout`, `confirm_checkout`,
   `get_checkout_options`, `update_checkout`, `get_checkout_status`, `cancel_checkout`, `get_order`,
   `connect_order_tracking`, `list_my_orders`, `get_my_order`, `get_cancellation_options`, `ask_store`.
   None take a customer id: the customer is whoever signed in.
@@ -77,6 +77,25 @@ Claude ── Bearer ────────▶ /connector/mcp  (tools bound to
   Shopify enables it for our client the two approvals become one.
 - `PUBLIC_BASE_URL` must be stable: Claude stores the connector URL, and the Shop redirect URL
   (`/auth/shop/callback`) registered in Dev Dashboard must match it.
+
+## Checks with the customer before the pay link (connector + website)
+
+Customer-facing checkouts go through every check before a pay link exists:
+
+1. **Product, options, quantity**: options resolved with `get_product_details` (below).
+2. **Delivery address**: `prepare_checkout` refuses without `address_id` (a saved address the customer picked) or
+   `use_shop_address` (the address in their Shop account). No silent default address.
+3. **Review**: `prepare_checkout` builds the checkout on the store, waits for its shipping plan and returns
+   `delivery` (`deliverable` true/false/null, address, pincode, delivery option and cost, or the store's reason),
+   items, breakdown and total, with **no pay link** (`status: awaiting_confirmation`). A store error about the
+   address/pincode counts as not deliverable even when it still lists a shipping option (stores do this, e.g.
+   `delivery_invalid_postal_code_for_country`).
+4. **Confirm**: `confirm_checkout`, only after the customer says yes, re-reads the checkout, refuses unless
+   delivery is confirmed, and turns the pay link on (`checkouts.confirmed_at`). `/pay/…` answers 410 until then.
+   On the website, a confirm in the same turn as the review is refused, so the customer always sees the review
+   card ("Check your order": items, deliver to, ✓/✗ delivery, total, Confirm order) and answers first.
+
+The partner API (`/mcp`) is unchanged: its `prepare_checkout` still returns a live pay link.
 
 ## Sizes, colours and quantity
 

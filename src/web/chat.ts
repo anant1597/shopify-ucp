@@ -33,25 +33,30 @@ store's own checkout page.
 
 How to work:
 - At the start of a shopping task, call get_my_profile once to know their name, phone and saved addresses.
-- Search with search_products. The website shows the results as product cards with image, price and store, so \
-in your text give a short take (one or two picks and why) and don't list the other results: the cards show them.
-- Search results show only one example variant. If a product has customer_must_choose (for example Size and \
-Color), never pick for the customer: ask them to choose each option and the quantity in one short question, \
-listing the choices (sizes as a range like 5–14 if long). The product cards also let them pick options and \
-quantity. Then call get_product_details with product_id, store and their choices in selected, and use the \
-variant_id it returns. If it reports problems or still_to_choose, ask about just that.
-- Ask the quantity if they haven't said it (in the same question as the options). Once product, every option and \
-quantity are clear, go straight to prepare_checkout without asking again: it only builds a checkout, nothing is \
-charged.
-- Only ask for details the profile doesn't have. If it has a phone, never ask for one. If there's a saved address, \
-confirm which one to use. If there's none but they're signed in with Shop, don't ask up front: call \
-prepare_checkout without address_id, because the store fills in the address saved in their Shop account, and \
-its messages show where it will ship; tell them that address so they can change it. Ask for an address (line 1, \
-city, state in full, 6-digit pincode, then add_address) only if the checkout comes back without one or they \
-want a different one.
-- After prepare_checkout the website shows a payment card with the total and a Pay button, so just say the \
-total and that they can pay with card or UPI on the store's page using the Pay button. Don't paste the pay \
-link itself; the button has it. Mention anything the store flagged.
+- The website shows search results as product cards with image, price and store, so in your text give a short \
+take (one or two picks and why) and don't list the other results: the cards show them.
+
+Go through every check with the customer before they get a pay link, in this order:
+1. Product: search with search_products. Search results show only one example variant. If a product has \
+customer_must_choose (for example Size and Color), never pick for the customer: ask them to choose each option and \
+the quantity in one short question, listing the choices (sizes as a range like 5–14 if long). The product cards \
+also let them pick options and quantity. Then call get_product_details with product_id, store and their choices in \
+selected, and use the variant_id it returns. If it reports problems or still_to_choose, ask about just that. Ask the \
+quantity if they haven't said it.
+2. Delivery address: ask where to deliver, in the same message as step 1's question when you can. Offer their \
+saved addresses from get_my_profile (one line each, with pincode), or, if they're signed in with Shop, "the address \
+in your Shop account" (use_shop_address), or a new address (line 1, city, state in full, 6-digit pincode; save it \
+with add_address). Only ask for details the profile doesn't have; if it has a phone, never ask for one.
+3. Review: once product, options, quantity and address are settled, call prepare_checkout. It builds the order on \
+the store and checks delivery to that pincode, but gives no pay link. The website shows it as a review card. If \
+delivery.deliverable is false, tell them the store doesn't deliver there and ask for another address or offer \
+another store. Otherwise sum it up in one or two lines (item with options and quantity, delivery address and \
+option, total) and ask them to confirm. Mention anything the store flagged.
+4. Pay link: only after the customer says yes in a new message, call confirm_checkout. The website then shows a \
+payment card with a Pay button, so just say they can pay by card or UPI on the store's page with the Pay button. \
+Don't paste the pay link. If they want changes, use update_checkout and show the summary again.
+
+Also:
 - Avoid cash-on-delivery shipping options: on many Indian stores they remove card and UPI payment.
 - For order status use get_order (orders placed here) or list_my_orders / get_my_order (any Shopify store, needs \
 order tracking turned on). Shop's order status can lag the store; say so if a customer reports a change you \
@@ -69,6 +74,7 @@ export type ChatEvent =
   | { type: "tool"; name: string; status: "start" | "done" | "error" }
   | { type: "products"; products: any[] }
   | { type: "checkout"; checkout: any }
+  | { type: "review"; review: any }
   | { type: "error"; message: string }
   | { type: "done"; conversation_id: string };
 
@@ -76,7 +82,8 @@ type DisplayItem =
   | { role: "user"; text: string }
   | { role: "assistant"; text: string }
   | { role: "products"; products: any[] }
-  | { role: "checkout"; checkout: any };
+  | { role: "checkout"; checkout: any }
+  | { role: "review"; review: any };
 
 const busy = new Set<string>();
 
@@ -124,6 +131,17 @@ function cardCheckout(data: any) {
   return {
     checkout_id: data.checkout_id, pay_url: data.pay_url, status: data.status, store: data.store,
     total: data.total, breakdown: data.breakdown, items: data.items, expires_at: data.expires_at,
+  };
+}
+
+/** Order review (before the pay link): what the customer checks. */
+function cardReview(data: any) {
+  if (!data?.checkout_id || data.pay_url) return null;
+  const d = data.delivery ?? {};
+  return {
+    checkout_id: data.checkout_id, store: data.store, items: data.items, total: data.total, breakdown: data.breakdown,
+    delivery: { deliverable: d.deliverable ?? null, address: d.address ?? data.delivery_address ?? null, pincode: d.pincode ?? null, shipping: d.shipping, reason: d.reason },
+    ready: data.ready_to_confirm ?? d.deliverable === true,
   };
 }
 
@@ -183,6 +201,7 @@ export async function runChat(
   };
 
   const tools = await connectTools(customerId);
+  const reviewedNow = new Set<string>(); // reviews shown during this customer message
   try {
     let jsonRetries = 0;
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -244,6 +263,15 @@ export async function runChat(
       const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
       for (const t of toolUses) {
         emit({ type: "tool", name: t.name, status: "start" });
+        if (t.name === "confirm_checkout" && reviewedNow.has((t.input as any)?.checkout_id)) {
+          // The customer must see the review and answer before the pay link goes live.
+          results.push({
+            type: "tool_result", tool_use_id: t.id, is_error: true,
+            content: "The customer hasn't seen this review yet. Show them the summary, ask them to confirm, and wait for their reply.",
+          });
+          emit({ type: "tool", name: t.name, status: "error" });
+          continue;
+        }
         try {
           // The MCP server validates the input against the tool's schema before running it.
           const r: any = await tools.mcp.callTool({ name: t.name, arguments: (t.input ?? {}) as Record<string, unknown> });
@@ -260,11 +288,17 @@ export async function runChat(
                 emit({ type: "products", products });
               }
             }
-            if (t.name === "prepare_checkout" || t.name === "update_checkout") {
-              const checkout = cardCheckout({ store: (t.input as any)?.store, ...data });
+            if (t.name === "prepare_checkout" || t.name === "update_checkout" || t.name === "confirm_checkout") {
+              const merged = { store: (t.input as any)?.store, ...data };
+              const checkout = merged.pay_url ? cardCheckout(merged) : null;
+              const review = merged.pay_url ? null : cardReview(merged);
               if (checkout) {
                 display.push({ role: "checkout", checkout });
                 emit({ type: "checkout", checkout });
+              } else if (review) {
+                reviewedNow.add(review.checkout_id);
+                display.push({ role: "review", review });
+                emit({ type: "review", review });
               }
             }
           }

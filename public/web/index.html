@@ -103,6 +103,15 @@
   .pay { display: flex; justify-content: center; align-items: center; gap: 8px; background: var(--brand); color: #fff; text-decoration: none; border-radius: 12px; padding: 13px; font-weight: 650; }
   .checkout .note { font-size: 13px; color: var(--muted); margin: 0; }
   .checkout .warn { font-size: 13px; color: var(--warn); margin: 0; }
+  .review h3 { margin: 0; font-size: 15px; }
+  .review ul { margin: 0; padding-left: 18px; font-size: 14px; }
+  .review .row { font-size: 14px; display: flex; flex-direction: column; gap: 2px; }
+  .review .row b { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+  .review .ok { color: var(--ok, #1a7f45); }
+  .review .acts { display: flex; gap: 8px; }
+  .review .acts button { flex: 1; border-radius: 12px; padding: 11px; font-weight: 650; font-size: 14px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+  .review .acts button.yes { background: var(--brand); color: #fff; border-color: var(--brand); }
+  .review .acts button:disabled { opacity: .5; }
 
   form.composer { display: flex; gap: 8px; padding: 10px 16px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--bg); }
   .composer textarea {
@@ -266,6 +275,31 @@
     scroll();
   }
 
+  // Order review before the pay link: item, delivery check, total. Confirm sends a yes the assistant acts on.
+  function addReview(r) {
+    hideEmpty();
+    const d = document.createElement("div"); d.className = "checkout review";
+    const lines = (r.breakdown || []).filter((b) => b.type !== "total" && b.inr != null);
+    const label = (t) => ({ subtotal: "Items", items_discount: "Discount", discount: "Discount", fulfillment: "Shipping", shipping: "Shipping", tax: "Tax" }[t] || t.replace(/_/g, " "));
+    const dl = r.delivery || {};
+    const ship = dl.shipping ? `${esc(dl.shipping.title || "Delivery")}${dl.shipping.cost_inr != null ? " · " + (dl.shipping.cost_inr ? inr(dl.shipping.cost_inr) : "Free") : ""}` : "";
+    const deliveryLine = dl.deliverable === true ? `<span class="ok">✓ Delivers to ${esc(dl.pincode || "this address")}</span>${ship ? `<span>${ship}</span>` : ""}`
+      : dl.deliverable === false ? `<span class="warn">✗ ${esc(dl.reason || "The store doesn't deliver to this address")}</span>`
+      : `<span class="note">${esc(dl.reason || "Delivery is checked on the store's page")}</span>`;
+    const total = r.total?.inr;
+    d.innerHTML = `
+      <div class="head"><h3>Check your order</h3><span class="store">${esc(r.store || "")}</span></div>
+      ${(r.items || []).length ? `<ul>${r.items.map((i) => `<li>${esc(i.title || "Item")} × ${esc(String(i.quantity))}${i.unit_price_inr != null ? " · " + inr(i.unit_price_inr) : ""}</li>`).join("")}</ul>` : ""}
+      <div class="row"><b>Deliver to</b><span>${esc(dl.address || "Not set yet")}</span>${deliveryLine}</div>
+      ${lines.length ? `<dl>${lines.map((b) => `<dt>${esc(label(b.type))}</dt><dd>${inr(b.inr)}</dd>`).join("")}</dl>` : ""}
+      <div class="total">${total != null ? inr(total) : "Total on the store's page"}</div>
+      ${r.ready ? `<div class="acts"><button type="button" class="yes">Confirm order</button><button type="button" class="chg">Change something</button></div>
+      <p class="note">Confirming gives you a link to pay on the store's page. Nothing is charged until you pay there.</p>` : ""}`;
+    d.querySelector(".yes")?.addEventListener("click", (ev) => { ev.currentTarget.disabled = true; submit("Yes, that's right. Confirm the order."); });
+    d.querySelector(".chg")?.addEventListener("click", () => { input.focus(); });
+    chat.append(d); scroll();
+  }
+
   function addCheckout(k) {
     hideEmpty();
     const d = document.createElement("div"); d.className = "checkout";
@@ -284,7 +318,7 @@
   }
 
   const toolLabels = {
-    get_my_profile: "Checking your details", search_products: "Searching stores", get_product_details: "Checking sizes and stock", prepare_checkout: "Building your order",
+    get_my_profile: "Checking your details", search_products: "Searching stores", get_product_details: "Checking sizes and stock", prepare_checkout: "Checking delivery and total", confirm_checkout: "Getting your payment link",
     get_checkout_options: "Checking delivery options", update_checkout: "Updating your order", get_checkout_status: "Checking payment",
     add_address: "Saving your address", update_my_details: "Saving your details", get_order: "Checking your order",
     list_my_orders: "Looking up your orders", get_my_order: "Checking your order", get_cancellation_options: "Checking the store's policy",
@@ -332,6 +366,7 @@
             setStatus(e.status === "start" ? (toolLabels[e.name] || "Working") : "Thinking");
           } else if (e.type === "products") { current = null; statusEl?.remove(); addProducts(e.products); if (statusEl) chat.append(statusEl); }
           else if (e.type === "checkout") { current = null; statusEl?.remove(); addCheckout(e.checkout); if (statusEl) chat.append(statusEl); }
+          else if (e.type === "review") { current = null; statusEl?.remove(); addReview(e.review); if (statusEl) chat.append(statusEl); }
           else if (e.type === "error") { setStatus(null); addError(e.message); }
           else if (e.type === "done") { conversationId = e.conversation_id; store.set("conversation_id", conversationId); }
         }
@@ -381,6 +416,7 @@
           else if (item.role === "assistant") addAssistant(item.text);
           else if (item.role === "products") addProducts(item.products);
           else if (item.role === "checkout") addCheckout(item.checkout);
+          else if (item.role === "review") addReview(item.review);
         }
       } else { conversationId = null; store.set("conversation_id", null); }
     }

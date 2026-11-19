@@ -187,4 +187,13 @@ for (const sql of [
   }
 }
 
+// Pay links work only once the customer has confirmed the order review (customer-facing flow). Checkouts made
+// before this column existed were already handed out, so they count as confirmed (runs once, with the ALTER).
+try {
+  db.exec("ALTER TABLE checkouts ADD COLUMN confirmed_at INTEGER");
+  db.exec("UPDATE checkouts SET confirmed_at = created_at");
+} catch {
+  /* column already exists */
+}
+
 export const now = () => Date.now();

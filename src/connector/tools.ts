@@ -6,7 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { db } from "../db.ts";
 import { getProductDetails, searchProducts } from "../services/catalog.ts";
-import { CheckoutRejected, getCheckoutOptions, getCheckoutStatus, prepareCheckout, updateCheckout } from "../services/checkout.ts";
+import { CheckoutRejected, confirmCheckout, getCheckoutOptions, getCheckoutStatus, prepareCheckout, updateCheckout } from "../services/checkout.ts";
 import { askStore, cancelUnpaidCheckout, getCancellationOptions, getOrder } from "../services/orders.ts";
 import { getShopOrder, isShopOrdersConnected, listShopOrders, startShopOrdersSignIn } from "../services/shopMcp.ts";
 import { addAddress, getCustomer, upsertCustomer } from "../services/customers.ts";
@@ -41,13 +41,17 @@ export function buildConnectorServer(customerId: string) {
     { name: "india-shopify-shopping", version: "0.1.0" },
     {
       instructions:
-        "Shop on Shopify stores that deliver in India for the signed-in customer. Flow: search_products → if the product " +
-        "has options (customer_must_choose, e.g. Size, Color), ask the customer to pick each one and the quantity, in one " +
-        "question, listing the choices → get_product_details with their picks for the exact variant_id → prepare_checkout " +
-        "→ give them the pay link. Never pick a size, colour or other option for the customer. Call get_my_profile first and only " +
-        "ask for what it lacks: never ask for a phone it already has. With no saved address, a Shop-signed-in customer's " +
-        "checkout uses the address in their Shop account (shown in the checkout messages); tell them where it will ship " +
-        "and ask for an address only if there is none or they want another. " +
+        "Shop on Shopify stores that deliver in India for the signed-in customer. Go through every check with the " +
+        "customer before giving a pay link: 1) search_products; 2) if the product has options (customer_must_choose, " +
+        "e.g. Size, Color), ask the customer to pick each one and the quantity in one question, listing the choices, " +
+        "then get_product_details with their picks for the exact variant_id (never pick an option for them); " +
+        "3) ask where to deliver: call get_my_profile first and offer their saved addresses, or the address in their " +
+        "Shop account (use_shop_address), or take a new one (add_address: line 1, city, state, 6-digit pincode); never " +
+        "ask for a phone the profile already has; 4) prepare_checkout builds the order on the store and returns a " +
+        "review with no pay link: it checks the store delivers to that pincode and gives the delivery option and total; " +
+        "if it doesn't deliver, say so and ask for another address; 5) show the review (item, options, quantity, " +
+        "address, delivery, total) and ask the customer to confirm; 6) only after they say yes, confirm_checkout returns " +
+        "the pay link. " +
         "Nothing is ever bought or paid by these tools: the customer pays on the store's own checkout page. " +
         "Prefer stores whose prices are in INR. Show prices in ₹.",
     },
@@ -197,16 +201,18 @@ export function buildConnectorServer(customerId: string) {
   server.registerTool(
     "prepare_checkout",
     {
-      title: "Prepare checkout and pay link",
+      title: "Build order for review",
       description:
-        "Build a checkout on the store and return pay_url: the customer opens it and pays on the store's own page " +
-        "(card, UPI, etc.). This never pays or places the order. For products with options, the variant_id must come " +
-        "from get_product_details with the customer's own choices. Confirm item, quantity, store and address first. " +
-        "Show the total and the pay_url as a link.",
+        "Build the order on the store for the address the customer chose and check it: whether the store delivers " +
+        "there, the delivery option and cost, and the exact total. Returns a review and NO pay link; show it to the " +
+        "customer and call confirm_checkout only after they agree. Needs address_id (a saved address the customer " +
+        "picked) or use_shop_address=true (customer chose the address in their Shop account). For products with " +
+        "options, the variant_id must come from get_product_details with the customer's own choices.",
       inputSchema: {
         store: z.string(),
         items: z.array(z.object({ variant_id: z.string(), quantity: z.number().int().min(1).max(20) })).min(1),
-        address_id: z.string().optional().describe("Defaults to the default saved address"),
+        address_id: z.string().optional().describe("Saved address the customer chose for this order"),
+        use_shop_address: z.boolean().optional().describe("Customer chose the address saved in their Shop account"),
         max_total_inr: z.number().positive().optional().describe("Refuse if the store's total is higher"),
         discount_codes: z.array(z.string()).optional(),
       },
@@ -223,8 +229,37 @@ export function buildConnectorServer(customerId: string) {
           );
         }
       }
-      return prepareCheckout({ ...a, customer_id: customerId, buyer_ip: buyerIp(), partner: "claude" });
+      if (!a.address_id && !a.use_shop_address) {
+        const saved = addresses();
+        throw new CheckoutRejected(
+          "Ask the customer where to deliver first. " +
+            (saved.length ? `Saved addresses: ${saved.map((x) => `${x.id} (${x.line1}, ${x.city} ${x.pincode})`).join("; ")}. ` : "No saved addresses. ") +
+            (isShopLinked(customerId) ? "They can also use the address in their Shop account (use_shop_address). " : "") +
+            "Or take a new address and save it with add_address. Then call prepare_checkout with their choice.",
+        );
+      }
+      if (a.use_shop_address && !a.address_id && !isShopLinked(customerId)) {
+        throw new CheckoutRejected("The customer isn't signed in with Shop, so there's no Shop address. Ask for an address and save it with add_address.");
+      }
+      const { use_shop_address, ...rest } = a;
+      return prepareCheckout({
+        ...rest, customer_id: customerId, buyer_ip: buyerIp(), partner: "claude",
+        require_confirmation: true, no_default_address: !a.address_id,
+      });
     }),
+  );
+
+  server.registerTool(
+    "confirm_checkout",
+    {
+      title: "Confirm order and get pay link",
+      description:
+        "Call only after the customer has seen the review from prepare_checkout (item, options, quantity, address, " +
+        "delivery, total) and said yes. Re-checks delivery and the total with the store, then returns pay_url: the " +
+        "customer pays on the store's own page. Nothing is charged by this tool.",
+      inputSchema: { checkout_id: z.string() },
+    },
+    guard((a) => confirmCheckout(a.checkout_id, customerId)),
   );
 
   server.registerTool(
@@ -243,7 +278,8 @@ export function buildConnectorServer(customerId: string) {
     {
       title: "Change checkout",
       description:
-        "Change shipping option, address, quantities (0 removes) or discount codes on a prepared checkout. The pay link stays the same. " +
+        "Change shipping option, address, quantities (0 removes) or discount codes on a prepared checkout. If it isn't " +
+        "confirmed yet, show the customer the updated summary and get their yes before confirm_checkout. " +
         "Avoid cash-on-delivery shipping: on many Indian stores it removes card/UPI payment.",
       inputSchema: {
         checkout_id: z.string(),

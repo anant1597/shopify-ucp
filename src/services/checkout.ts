@@ -24,6 +24,22 @@ export interface PrepareCheckoutInput {
   max_total_inr?: number;
   discount_codes?: string[];
   partner?: string;
+  /**
+   * Customer-facing flow: build the checkout and return a review (items, address, delivery check, total) without
+   * a pay link. The link only works after confirmCheckout, once the customer has seen the review and said yes.
+   */
+  require_confirmation?: boolean;
+  /** Don't fall back to the default saved address (the store fills in the Shop account's address instead). */
+  no_default_address?: boolean;
+}
+
+export interface DeliveryCheck {
+  /** true: the store has a delivery option for this address; false: it doesn't; null: can't tell yet. */
+  deliverable: boolean | null;
+  address: string | null;
+  pincode: string | null;
+  shipping?: { title: string; cost_inr?: number; cash_on_delivery: boolean };
+  reason?: string;
 }
 
 export interface PrepareCheckoutResult {
@@ -38,18 +54,38 @@ export interface PrepareCheckoutResult {
   expires_at?: string;
 }
 
+/** What prepareCheckout returns in the customer-facing flow: everything to check, no pay link yet. */
+export interface CheckoutReview {
+  checkout_id: string;
+  status: "awaiting_confirmation";
+  store: string;
+  method: "ucp" | "permalink";
+  buyer_signed_in: boolean;
+  items: { title?: string; variant_id?: string; quantity: number; unit_price_inr?: number }[];
+  delivery: DeliveryCheck;
+  total?: { inr: number; currency: string; estimated: boolean };
+  breakdown?: { type: string; inr: number }[];
+  messages: { severity?: string; code?: string; text: string }[];
+  ready_to_confirm: boolean;
+  next_step: string;
+}
+
 export class CheckoutRejected extends Error {}
 
 const toGid = (id: string) => (id.startsWith("gid://") ? id : `gid://shopify/ProductVariant/${id}`);
 const toNumericId = (id: string) => id.split("/").pop()!;
 
-export async function prepareCheckout(input: PrepareCheckoutInput): Promise<PrepareCheckoutResult> {
+export async function prepareCheckout(input: PrepareCheckoutInput & { require_confirmation: true }): Promise<CheckoutReview>;
+export async function prepareCheckout(input: PrepareCheckoutInput): Promise<PrepareCheckoutResult>;
+export async function prepareCheckout(input: PrepareCheckoutInput): Promise<PrepareCheckoutResult | CheckoutReview> {
   const customer = getCustomer(input.customer_id);
   if (!customer) throw new CheckoutRejected(`Unknown customer ${input.customer_id}`);
   if (!input.items.length) throw new CheckoutRejected("No items");
   if (!input.buyer_ip) throw new CheckoutRejected("buyer_ip is required (Shopify needs the real customer IP)");
 
-  const address = input.address_id ? getAddress(input.address_id) : getDefaultAddress(customer.id);
+  const address = input.address_id
+    ? getAddress(input.address_id)
+    : input.no_default_address ? undefined : getDefaultAddress(customer.id);
   if (input.address_id && (!address || address.customer_id !== customer.id)) throw new CheckoutRejected("Address not found");
 
   const store = await discoverStore(input.store);
@@ -72,7 +108,7 @@ async function prepareViaUcp(
   address: Address | undefined,
   domain: string,
   endpoint: string,
-): Promise<PrepareCheckoutResult> {
+): Promise<PrepareCheckoutResult | CheckoutReview> {
   // Signed-in customers get a buyer-linked token (store recognises them: no OTP, saved details, auto discounts)
   const buyerToken = await getStoreBuyerToken(customer.id, domain).catch(() => null);
   // Stores accept anonymous create_checkout today (lower rate limits); use the agent token when we have one.
@@ -97,6 +133,8 @@ async function prepareViaUcp(
   };
 
   let co = unwrap(await call("create_checkout", { checkout: checkoutBody }));
+  // The store plans shipping after create returns; wait for it so the delivery check is real.
+  if (input.require_confirmation) co = await refetchUntilShippingPlanned(call, co.id, co);
 
   // Signed-in buyers get the store's saved address prefilled, sometimes without a phone number
   // (store message: delivery_phone_number_required). Fill it from the customer's profile.
@@ -122,7 +160,7 @@ async function prepareViaUcp(
   }
 
   // We deliberately never call complete_checkout.
-  return persist({
+  const saved = persist({
     input,
     domain,
     method: "ucp",
@@ -137,6 +175,108 @@ async function prepareViaUcp(
     expiresAt: co.expires_at,
     needsInput: co.status === "incomplete",
   });
+  if (!input.require_confirmation) return saved;
+  const row = db.prepare("SELECT * FROM checkouts WHERE id = ?").get(saved.checkout_id) as any;
+  return reviewOf(row, co, saved);
+}
+
+/** Does the store deliver to the checkout's address, and how? Read from its shipping plan and messages. */
+export function deliveryCheck(co: any): DeliveryCheck {
+  const method = co.fulfillment?.methods?.[0];
+  const dest = method?.destinations?.find((d: any) => d.id === method.selected_destination_id) ?? method?.destinations?.[0];
+  const address = dest
+    ? [dest.street_address, dest.extended_address, dest.address_locality, dest.address_region, dest.postal_code].filter(Boolean).join(", ")
+    : null;
+  const pincode = dest?.postal_code ?? null;
+  if (!dest) return { deliverable: null, address, pincode, reason: "No delivery address on the checkout yet." };
+  const groups: any[] = (co.fulfillment?.methods ?? []).flatMap((m: any) => m.groups ?? []);
+  const withOptions = groups.filter((g) => g.options?.length);
+  const problem = (co.messages ?? []).find(
+    (m: any) => (m.severity ?? m.type) !== "info" && /ship|deliver|fulfil|address|postal|pin ?code|zip|region|serviceab/i.test(`${m.code ?? ""} ${m.content ?? ""} ${m.path ?? ""}`),
+  );
+  // Stores can still list a shipping option for an address they reject (seen: "Free shipping" alongside
+  // delivery_invalid_postal_code_for_country), so a delivery/address error message wins over the options.
+  if (problem) {
+    const text = problem.content ?? problem.code;
+    if (/phone/i.test(`${problem.code ?? ""} ${problem.content ?? ""}`)) {
+      return { deliverable: null, address, pincode, reason: `The store needs a phone number for delivery (${text}).` };
+    }
+    return { deliverable: false, address, pincode, reason: text };
+  }
+  if (!withOptions.length || (groups.length && withOptions.length < groups.length)) {
+    return {
+      deliverable: false, address, pincode,
+      reason: problem?.content ?? problem?.code ?? `The store has no delivery option for pincode ${pincode ?? "?"}.`,
+    };
+  }
+  const g = withOptions[0];
+  const sel = g.options.find((o: any) => o.id === g.selected_option_id) ?? g.options[0];
+  const cost = optionCost(sel);
+  return {
+    deliverable: true, address, pincode,
+    shipping: { title: sel.title, cost_inr: cost === Number.MAX_SAFE_INTEGER ? undefined : cost / 100, cash_on_delivery: isCod(sel) },
+  };
+}
+
+function reviewOf(row: any, co: any | null, base: { method: "ucp" | "permalink"; buyer_signed_in: boolean; total?: any; breakdown?: any; messages: any[] }): CheckoutReview {
+  const delivery: DeliveryCheck = co
+    ? deliveryCheck(co)
+    : { deliverable: null, address: null, pincode: null, reason: "This store has no API checkout: delivery and the address are checked on its own page." };
+  const describe = co ? describeCheckout(row, co) : null;
+  const ready = base.method === "permalink" || delivery.deliverable === true;
+  return {
+    checkout_id: row.id,
+    status: "awaiting_confirmation",
+    store: row.store_domain,
+    method: base.method,
+    buyer_signed_in: base.buyer_signed_in,
+    items: describe?.items ?? [],
+    delivery,
+    total: describe?.total ? { ...describe.total, estimated: false } : base.total,
+    breakdown: describe?.breakdown ?? base.breakdown,
+    messages: base.messages,
+    ready_to_confirm: ready,
+    next_step: ready
+      ? "Show the customer this summary (item, size/colour, quantity, delivery address, delivery option, total) and ask them to confirm. Only after they say yes, call confirm_checkout to get the pay link."
+      : delivery.deliverable === false
+        ? "The store won't deliver to this address (see delivery.reason). Tell the customer and ask for a corrected or different address (or offer another store); then update_checkout with the new address_id or prepare again."
+        : "Fix what's missing (see delivery.reason) before asking the customer to confirm.",
+  };
+}
+
+/**
+ * The customer has seen the review and said yes: re-check the checkout with the store (still deliverable, latest
+ * total) and turn on its pay link.
+ */
+export async function confirmCheckout(checkoutId: string, customerId: string) {
+  const row = db.prepare("SELECT * FROM checkouts WHERE id = ?").get(checkoutId) as any;
+  if (!row || row.customer_id !== customerId) throw new CheckoutRejected("Checkout not found");
+  if (["completed", "canceled"].includes(row.status)) throw new CheckoutRejected(`Checkout is already ${row.status}; prepare a new one.`);
+  let review: ReturnType<typeof describeCheckout> | null = null;
+  if (row.method === "ucp") {
+    const { co } = await openUcpCheckout(checkoutId, customerId);
+    syncRow(row, co);
+    const d = deliveryCheck(co);
+    if (d.deliverable !== true) {
+      throw new CheckoutRejected(`Can't confirm yet: ${d.reason ?? "delivery isn't confirmed for this address"}`);
+    }
+    review = describeCheckout(row, co);
+  }
+  if (row.status === "over_cap") throw new CheckoutRejected("The total is above the price cap; change the order first.");
+  if (!row.confirmed_at) db.prepare("UPDATE checkouts SET confirmed_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), row.id);
+  row.confirmed_at = row.confirmed_at ?? now();
+  return {
+    checkout_id: row.id,
+    status: row.status as string,
+    store: row.store_domain,
+    pay_url: `${config.publicBaseUrl}/pay/${row.pay_token}`,
+    total: row.total_minor != null ? { inr: row.total_minor / 100, currency: row.currency, estimated: row.method !== "ucp" } : undefined,
+    breakdown: review?.breakdown,
+    items: review?.items,
+    delivery_address: review?.delivery_address,
+    expires_at: row.expires_at ? new Date(row.expires_at).toISOString() : undefined,
+    note: "Pay link is live. The customer pays on the store's own page (card, UPI). Nothing has been charged.",
+  };
 }
 
 function unwrap(r: any) {
@@ -248,7 +388,7 @@ async function prepareViaPermalink(
   customer: Customer,
   address: Address | undefined,
   domain: string,
-): Promise<PrepareCheckoutResult> {
+): Promise<PrepareCheckoutResult | CheckoutReview> {
   const path = input.items.map((i) => `${toNumericId(i.variant_id)}:${i.quantity}`).join(",");
   const u = new URL(`https://${domain}/cart/${path}`);
   const q = u.searchParams;
@@ -270,7 +410,7 @@ async function prepareViaPermalink(
   if (input.discount_codes?.[0]) q.set("discount", input.discount_codes[0]);
   q.set("utm_source", "agent");
 
-  return persist({
+  const saved = persist({
     input,
     domain,
     method: "permalink",
@@ -284,6 +424,12 @@ async function prepareViaPermalink(
     messages: [{ severity: "info", text: "Store has no UCP checkout; totals are calculated on the store's checkout page." }],
     needsInput: false,
   });
+  if (!input.require_confirmation) return saved;
+  const row = db.prepare("SELECT * FROM checkouts WHERE id = ?").get(saved.checkout_id) as any;
+  const review = reviewOf(row, null, saved);
+  review.items = input.items.map((i) => ({ variant_id: i.variant_id, quantity: i.quantity }));
+  if (address) review.delivery = { ...review.delivery, address: [address.line1, address.line2, address.city, address.state, address.pincode].filter(Boolean).join(", "), pincode: address.pincode };
+  return review;
 }
 
 // ------------------------------------------------------------------ persistence & status
@@ -309,12 +455,13 @@ function persist(p: {
   const expiresAtMs = p.expiresAt ? Date.parse(p.expiresAt) : now() + 24 * 60 * 60 * 1000;
   db.prepare(
     `INSERT INTO checkouts (id, customer_id, partner, store_domain, method, ucp_checkout_id, status, total_minor, currency,
-       continue_url_enc, pay_token, buyer_signed_in, buyer_ip, created_at, updated_at, expires_at, max_total_minor)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       continue_url_enc, pay_token, buyer_signed_in, buyer_ip, created_at, updated_at, expires_at, max_total_minor, confirmed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id, p.input.customer_id, p.input.partner ?? null, p.domain, p.method, p.ucpId, status, p.totalMinor ?? null,
     p.currency, encrypt(p.continueUrl), payToken, p.buyerSignedIn ? 1 : 0, p.input.buyer_ip, now(), now(), expiresAtMs,
     p.input.max_total_inr != null ? Math.round(p.input.max_total_inr * 100) : null,
+    p.input.require_confirmation ? null : now(),
   );
   return {
     checkout_id: id,
@@ -331,8 +478,8 @@ function persist(p: {
 
 /** Resolve our pay link to the store's checkout URL (used by GET /pay/:token). */
 export function resolvePayLink(payToken: string): string | null {
-  const row = db.prepare("SELECT id, continue_url_enc, expires_at, status FROM checkouts WHERE pay_token = ?").get(payToken) as any;
-  if (!row || (row.expires_at && row.expires_at < now())) return null;
+  const row = db.prepare("SELECT id, continue_url_enc, expires_at, status, confirmed_at FROM checkouts WHERE pay_token = ?").get(payToken) as any;
+  if (!row || (row.expires_at && row.expires_at < now()) || !row.confirmed_at) return null;
   if (row.status === "over_cap" || row.status === "canceled" || row.status === "completed") return null;
   if (row.status === "awaiting_payment" || row.status === "needs_customer_input") {
     db.prepare("UPDATE checkouts SET status = 'link_opened', updated_at = ? WHERE id = ?").run(now(), row.id);
@@ -374,7 +521,9 @@ export async function getCheckoutStatus(checkoutId: string, customerId?: string)
     total: row.total_minor != null ? { inr: row.total_minor / 100, currency: row.currency } : undefined,
     order_id: row.order_id ?? undefined,
     order_url: row.order_url ?? undefined,
-    pay_url: `${config.publicBaseUrl}/pay/${row.pay_token}`,
+    ...(row.confirmed_at
+      ? { pay_url: `${config.publicBaseUrl}/pay/${row.pay_token}` }
+      : { awaiting_confirmation: true }),
     note: row.method === "permalink" ? "Permalink checkouts can't be tracked through UCP; confirm with the customer." : undefined,
   };
 }
@@ -455,7 +604,10 @@ function describeCheckout(row: any, co: any) {
     discount_codes: co.discounts?.codes ?? [],
     applied_discounts: (co.discounts?.applied ?? []).map((d: any) => ({ title: d.title ?? d.code, inr: (amountOf(d) ?? 0) / 100 })),
     messages: (co.messages ?? []).map((m: any) => ({ severity: m.severity ?? m.type, code: m.code, text: m.content ?? m.code })),
-    pay_url: `${config.publicBaseUrl}/pay/${row.pay_token}`,
+    delivery: deliveryCheck(co),
+    ...(row.confirmed_at
+      ? { pay_url: `${config.publicBaseUrl}/pay/${row.pay_token}` }
+      : { awaiting_confirmation: true, next_step: "Show the customer the updated summary; call confirm_checkout only after they say yes." }),
   };
 }
 
