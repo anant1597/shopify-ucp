@@ -2,8 +2,8 @@
  * Website chat: Claude (Messages API, streaming manual tool loop) driving the same customer-bound tools
  * as the Claude connector, called in-process over an in-memory MCP link.
  *
- * Conversations are stored server-side and appended to, never edited (Claude Opus 5.5 checks that replayed
- * thinking blocks belong to an unedited history).
+ * Conversations are stored server-side and appended to, never edited (the API checks that replayed thinking
+ * blocks belong to an unedited history; a changed system prompt or tool list after a deploy drops the old blocks).
  */
 import Anthropic from "@anthropic-ai/sdk";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -235,8 +235,12 @@ export async function runChat(
         messages,
         cache_control: { type: "ephemeral" },
         output_config: { effort: "medium" },
+        // Saved thinking is bound to the system prompt and tools it was made with. When a deploy changes either,
+        // chats started before it would fail with a 400; dropping the stale reasoning lets them carry on.
+        thinking: { type: "adaptive", block_binding: { prefix_mismatch_behavior: "drop_block" } },
+        betas: ["thinking-binding-controls-2026-08-01", ...(HAS_FALLBACK ? ["server-side-fallback-2026-07-01"] : [])],
         // On a safety decline, the API re-runs the turn on a suitable fallback model (not available on Haiku).
-        ...(HAS_FALLBACK ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
+        ...(HAS_FALLBACK ? { fallbacks: "default" as const } : {}),
       });
       stream.on("text", (delta) => {
         turnText += delta;
