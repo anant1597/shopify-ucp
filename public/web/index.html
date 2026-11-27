@@ -92,6 +92,10 @@
   .card label { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
   .card select { font: inherit; font-size: 13px; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 5px 6px; width: 100%; }
   .card button.go { background: var(--brand); color: #fff; }
+  .card.sel { border-color: var(--brand); box-shadow: 0 0 0 2px var(--brand-soft), var(--shadow); }
+  .card button.added { background: var(--brand-soft); color: var(--brand); }
+  .basket { position: sticky; bottom: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--surface); border: 1px solid var(--brand); border-radius: 12px; padding: 8px 8px 8px 14px; font-size: 14px; box-shadow: var(--shadow); }
+  .basket button { background: var(--brand); color: #fff; border: 0; border-radius: 9px; padding: 8px 14px; font-weight: 600; font-size: 14px; }
   .card button { margin-top: 6px; background: var(--brand-soft); color: var(--brand); border: 0; border-radius: 9px; padding: 7px 8px; font-size: 13px; font-weight: 600; }
 
   .checkout { align-self: stretch; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; max-width: 440px; }
@@ -281,9 +285,24 @@
     const d = document.createElement("div"); d.className = "msg error"; d.textContent = text; chat.append(d); scroll();
   }
 
+  // Product cards: pick options and quantity on each card, add as many as they like, then send them together.
   function addProducts(products) {
     hideEmpty();
     const row = document.createElement("div"); row.className = "products";
+    const basket = new Map(); // card -> { p, chosen, qty }
+    const bar = document.createElement("div"); bar.className = "basket hidden";
+    bar.innerHTML = `<span class="n"></span><button type="button">Continue</button>`;
+    const refresh = () => {
+      bar.classList.toggle("hidden", !basket.size);
+      bar.querySelector(".n").textContent = `${basket.size} item${basket.size === 1 ? "" : "s"} selected`;
+    };
+    bar.querySelector("button").addEventListener("click", () => {
+      const items = [...basket.values()].map(({ p, chosen, qty }) =>
+        `"${p.title}" from ${p.store}${chosen.length ? ` (${chosen.join(", ")})` : ""}, quantity ${qty}`);
+      if (!items.length || busy) return;
+      bar.querySelector("button").disabled = true;
+      submit(items.length === 1 ? `I'd like ${items[0]}.` : `I'd like these ${items.length} items: ${items.map((t, i) => `${i + 1}. ${t}`).join("; ")}.`);
+    });
     for (const p of products) {
       const c = document.createElement("div"); c.className = "card";
       const img = safeUrl(p.image);
@@ -296,14 +315,15 @@
           <button type="button" class="choose">Choose this</button>
         </div>`;
       c.querySelector("img")?.addEventListener("error", (e) => { e.target.parentElement.textContent = "No image"; });
-      c.querySelector("button.choose").addEventListener("click", (ev) => openPicker(c, p, ev.currentTarget));
+      c.querySelector("button.choose").addEventListener("click", (ev) => openPicker(c, p, ev.currentTarget, basket, refresh));
       row.append(c);
     }
-    chat.append(row); scroll();
+    chat.append(row, bar); scroll();
   }
 
-  // Options (size, colour…) and quantity, picked on the card; sent as a chat message the assistant acts on.
-  function openPicker(card, p, btn) {
+  // Options (size, colour…) and quantity on one card. "Add" puts it in the row's selection; changing an option
+  // afterwards updates it, and "Remove" takes it out. Opening the picker never moves the chat.
+  function openPicker(card, p, btn, basket, refresh) {
     const opts = (p.options || []).filter((o) => (o.values || []).length > 1);
     const pick = document.createElement("div"); pick.className = "pick";
     const soldOut = (v) => / \(sold out\)$/.test(v);
@@ -311,18 +331,32 @@
       <label>${esc(o.name)}<select data-i="${i}"><option value="">Choose…</option>${o.values.map((v) =>
         `<option value="${esc(v.replace(/ \(sold out\)$/, ""))}"${soldOut(v) ? " disabled" : ""}>${esc(v)}</option>`).join("")}</select></label>`).join("") + `
       <label>Quantity<select data-q>${[1,2,3,4,5,6,7,8,9,10].map((n) => `<option>${n}</option>`).join("")}</select></label>
-      <button type="button" class="go">Continue</button>`;
+      <button type="button" class="go">Add</button>`;
     btn.replaceWith(pick);
     const go = pick.querySelector("button.go");
     const sels = [...pick.querySelectorAll("select[data-i]")];
-    const ready = () => { go.disabled = sels.some((s) => !s.value); go.style.opacity = go.disabled ? ".5" : "1"; };
-    sels.forEach((s) => s.addEventListener("change", ready)); ready();
+    const qty = pick.querySelector("select[data-q]");
+    const entry = () => ({ p, chosen: sels.map((s) => `${opts[+s.dataset.i].name}: ${s.value}`), qty: qty.value });
+    const paint = () => {
+      const added = basket.has(card);
+      card.classList.toggle("sel", added);
+      go.classList.toggle("added", added);
+      go.classList.toggle("go", !added);
+      go.textContent = added ? "✓ Added · Remove" : "Add";
+      go.disabled = !added && sels.some((s) => !s.value);
+      go.style.opacity = go.disabled ? ".5" : "1";
+    };
+    const changed = () => {
+      if (basket.has(card)) { if (sels.some((s) => !s.value)) basket.delete(card); else basket.set(card, entry()); refresh(); }
+      paint();
+    };
+    [...sels, qty].forEach((s) => s.addEventListener("change", changed));
     go.addEventListener("click", () => {
-      const chosen = sels.map((s) => `${opts[+s.dataset.i].name}: ${s.value}`);
-      const qty = pick.querySelector("select[data-q]").value;
-      submit(`I'd like "${p.title}" from ${p.store}${chosen.length ? ` (${chosen.join(", ")})` : ""}, quantity ${qty}.`);
+      if (basket.has(card)) basket.delete(card); else basket.set(card, entry());
+      refresh(); paint();
     });
-    scroll();
+    paint();
+    pick.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 
   // Order review before the pay link: item, delivery check, total. Confirm sends a yes the assistant acts on.
