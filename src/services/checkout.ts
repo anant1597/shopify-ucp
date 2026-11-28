@@ -78,6 +78,33 @@ export class CheckoutRejected extends Error {}
 const toGid = (id: string) => (id.startsWith("gid://") ? id : `gid://shopify/ProductVariant/${id}`);
 const toNumericId = (id: string) => id.split("/").pop()!;
 
+/** The store's lines merged per variant: some stores split each unit into its own line of quantity 1. */
+function itemsOf(co: any): { variant_id?: string; title?: string; quantity: number; unit_price_inr?: number }[] {
+  const byVariant = new Map<string, { variant_id?: string; title?: string; quantity: number; unit_price_inr?: number }>();
+  for (const li of co.line_items ?? []) {
+    const key = li.item?.id ?? li.id;
+    const price = amountOf(li.item?.price);
+    const seen = byVariant.get(key);
+    if (seen) seen.quantity += li.quantity ?? 0;
+    else byVariant.set(key, { variant_id: li.item?.id, title: li.item?.title, quantity: li.quantity ?? 0, unit_price_inr: price != null ? price / 100 : undefined });
+  }
+  return [...byVariant.values()];
+}
+
+/** Items the store gave fewer of than asked for (it limits how many per order, or has fewer in stock). */
+function quantityShortfalls(requested: { variant_id: string; quantity: number }[], co: any): string[] {
+  const got = new Map(itemsOf(co).map((i) => [i.variant_id, i]));
+  return requested.flatMap((r) => {
+    const g = got.get(toGid(r.variant_id));
+    const have = g?.quantity ?? 0;
+    if (r.quantity <= have) return [];
+    const name = g?.title ? `"${g.title}"` : `variant ${toNumericId(r.variant_id)}`;
+    return [have
+      ? `The store accepted only ${have} of ${name} (asked for ${r.quantity}): it limits how many one order can have or has no more in stock. Tell the customer.`
+      : `The store left out ${name}: it may be sold out. Tell the customer.`];
+  });
+}
+
 export async function prepareCheckout(input: PrepareCheckoutInput & { require_confirmation: true }): Promise<CheckoutReview>;
 export async function prepareCheckout(input: PrepareCheckoutInput): Promise<PrepareCheckoutResult>;
 export async function prepareCheckout(input: PrepareCheckoutInput): Promise<PrepareCheckoutResult | CheckoutReview> {
@@ -181,7 +208,10 @@ async function prepareViaUcp(
     estimated: false,
     breakdown: totals.lines,
     buyerSignedIn: !!buyerToken,
-    messages: (co.messages ?? []).map((m: any) => ({ severity: m.severity ?? m.type, code: m.code, text: m.content ?? m.code })),
+    messages: [
+      ...(co.messages ?? []).map((m: any) => ({ severity: m.severity ?? m.type, code: m.code, text: m.content ?? m.code })),
+      ...quantityShortfalls(input.items, co).map((text) => ({ severity: "warning", code: "quantity_limited", text })),
+    ],
     expiresAt: co.expires_at,
     needsInput: co.status === "incomplete",
   });
@@ -732,12 +762,7 @@ function describeCheckout(row: any, co: any) {
     status: row.status as string,
     total: totals.total != null ? { inr: totals.total / 100, currency: totals.currency } : undefined,
     breakdown: totals.lines,
-    items: (co.line_items ?? []).map((li: any) => ({
-      variant_id: li.item?.id,
-      title: li.item?.title,
-      quantity: li.quantity,
-      unit_price_inr: amountOf(li.item?.price) != null ? amountOf(li.item.price)! / 100 : undefined,
-    })),
+    items: itemsOf(co),
     delivery_address: dest
       ? [dest.street_address, dest.extended_address, dest.address_locality, dest.address_region, dest.postal_code].filter(Boolean).join(", ")
       : null,
@@ -836,9 +861,11 @@ export async function updateCheckout(input: UpdateCheckoutInput) {
       lineItems = (co.line_items ?? []).map((li: any) => ({ id: li.id, item: { id: li.item?.id }, quantity: li.quantity }));
       for (const change of input.items) {
         const gid = toGid(change.variant_id);
+        // The store may hold one variant as several lines of 1: keep the first at the new quantity, drop the rest.
         const existing = lineItems!.find((l) => l.item.id === gid);
+        lineItems = lineItems!.filter((l) => l.item.id !== gid || l === existing);
         if (existing) existing.quantity = change.quantity;
-        else if (change.quantity > 0) lineItems!.push({ item: { id: gid }, quantity: change.quantity });
+        else if (change.quantity > 0) lineItems.push({ item: { id: gid }, quantity: change.quantity });
       }
       lineItems = lineItems!.filter((l) => l.quantity > 0);
       if (!lineItems.length) throw new CheckoutRejected("A checkout needs at least one item");
@@ -874,6 +901,7 @@ export async function updateCheckout(input: UpdateCheckoutInput) {
         }
       }
     }
+    if (lineItems) warnings.push(...quantityShortfalls(input.items!.filter((i) => i.quantity > 0), co));
     if (input.discount_codes?.length) {
       const applied = new Set((co.discounts?.applied ?? []).map((d: any) => String(d.code ?? d.title ?? "").toLowerCase()));
       for (const code of input.discount_codes) {
